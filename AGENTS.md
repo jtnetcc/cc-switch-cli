@@ -15,6 +15,12 @@
 - For now, we only actively maintain the interactive TUI flows. Non-interactive CLI commands/subcommands may lag behind and are not guaranteed to be up to date.
 - 暂时只维护交互式 TUI（Interactive Mode），非交互 CLI 命令先不维护。
 
+## Implementation Philosophy
+
+- 代码是负债，不是资产。优先少写代码、少加抽象、少引入新文件之间的耦合。
+- As a working rule, keep newly added or heavily edited code files under roughly 500 lines when practical. If a file grows past that, prefer splitting local-only logic into smaller modules.
+- 后端实现若直接借鉴上游 `cc-switch`，应尽量保持行为、结构和命名与上游一致；本仓库特有的适配逻辑优先旁路拆出，不要为了“重构得更漂亮”而偏离上游。
+
 ## Build, Test, and Development Commands
 
 Run commands from the repo root unless noted.

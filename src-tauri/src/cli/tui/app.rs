@@ -187,6 +187,15 @@ pub enum Overlay {
         lines: Vec<String>,
         scroll: usize,
     },
+    StreamCheckRunning {
+        provider_id: String,
+        provider_name: String,
+    },
+    StreamCheckResult {
+        provider_name: String,
+        lines: Vec<String>,
+        scroll: usize,
+    },
     UpdateAvailable {
         current: String,
         latest: String,
@@ -563,6 +572,9 @@ pub enum Action {
     },
     ProviderSpeedtest {
         url: String,
+    },
+    ProviderStreamCheck {
+        id: String,
     },
     ProviderModelFetch {
         base_url: String,
@@ -1311,6 +1323,16 @@ impl App {
                 self.overlay = Overlay::SpeedtestRunning { url: url.clone() };
                 Action::ProviderSpeedtest { url }
             }
+            KeyCode::Char('c') => {
+                let Some(row) = visible.get(self.provider_idx) else {
+                    return Action::None;
+                };
+                self.overlay = Overlay::StreamCheckRunning {
+                    provider_id: row.id.clone(),
+                    provider_name: row.provider.name.clone(),
+                };
+                Action::ProviderStreamCheck { id: row.id.clone() }
+            }
             _ => Action::None,
         }
     }
@@ -1340,6 +1362,13 @@ impl App {
                 };
                 self.overlay = Overlay::SpeedtestRunning { url: url.clone() };
                 Action::ProviderSpeedtest { url }
+            }
+            KeyCode::Char('c') => {
+                self.overlay = Overlay::StreamCheckRunning {
+                    provider_id: row.id.clone(),
+                    provider_name: row.provider.name.clone(),
+                };
+                Action::ProviderStreamCheck { id: row.id.clone() }
             }
             _ => Action::None,
         }
@@ -2360,6 +2389,30 @@ impl App {
                 _ => Action::None,
             },
             Overlay::SpeedtestResult { scroll, lines, .. } => match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    self.overlay = Overlay::None;
+                    Action::None
+                }
+                KeyCode::Up => {
+                    *scroll = scroll.saturating_sub(1);
+                    Action::None
+                }
+                KeyCode::Down => {
+                    if !lines.is_empty() {
+                        *scroll = (*scroll + 1).min(lines.len() - 1);
+                    }
+                    Action::None
+                }
+                _ => Action::None,
+            },
+            Overlay::StreamCheckRunning { .. } => match key.code {
+                KeyCode::Esc => {
+                    self.overlay = Overlay::None;
+                    Action::None
+                }
+                _ => Action::None,
+            },
+            Overlay::StreamCheckResult { scroll, lines, .. } => match key.code {
                 KeyCode::Esc | KeyCode::Char('q') => {
                     self.overlay = Overlay::None;
                     Action::None
@@ -4045,6 +4098,60 @@ mod tests {
 
         let action = app.on_key(key(KeyCode::Char('s')), &data);
         assert!(matches!(action, Action::ProviderSwitch { id } if id == "p1"));
+    }
+
+    #[test]
+    fn providers_c_key_requests_stream_check() {
+        let mut app = App::new(Some(AppType::Claude));
+        app.route = Route::Providers;
+        app.focus = Focus::Content;
+
+        let mut data = UiData::default();
+        data.providers.rows.push(super::super::data::ProviderRow {
+            id: "p1".to_string(),
+            provider: crate::provider::Provider::with_id(
+                "p1".to_string(),
+                "Provider One".to_string(),
+                json!({"env":{"ANTHROPIC_BASE_URL":"https://example.com","ANTHROPIC_AUTH_TOKEN":"sk-demo"}}),
+                None,
+            ),
+            api_url: Some("https://example.com".to_string()),
+            is_current: false,
+        });
+
+        let action = app.on_key(key(KeyCode::Char('c')), &data);
+        assert!(matches!(action, Action::ProviderStreamCheck { id } if id == "p1"));
+        assert!(
+            matches!(app.overlay, Overlay::StreamCheckRunning { ref provider_name, .. } if provider_name == "Provider One")
+        );
+    }
+
+    #[test]
+    fn provider_detail_c_key_requests_stream_check() {
+        let mut app = App::new(Some(AppType::Claude));
+        app.route = Route::ProviderDetail {
+            id: "p1".to_string(),
+        };
+        app.focus = Focus::Content;
+
+        let mut data = UiData::default();
+        data.providers.rows.push(super::super::data::ProviderRow {
+            id: "p1".to_string(),
+            provider: crate::provider::Provider::with_id(
+                "p1".to_string(),
+                "Provider One".to_string(),
+                json!({"env":{"ANTHROPIC_BASE_URL":"https://example.com","ANTHROPIC_AUTH_TOKEN":"sk-demo"}}),
+                None,
+            ),
+            api_url: Some("https://example.com".to_string()),
+            is_current: false,
+        });
+
+        let action = app.on_key(key(KeyCode::Char('c')), &data);
+        assert!(matches!(action, Action::ProviderStreamCheck { id } if id == "p1"));
+        assert!(
+            matches!(app.overlay, Overlay::StreamCheckRunning { ref provider_name, .. } if provider_name == "Provider One")
+        );
     }
 
     #[test]

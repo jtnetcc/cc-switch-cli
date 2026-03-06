@@ -21,8 +21,9 @@ use crate::cli::i18n::{set_language, texts};
 use crate::error::AppError;
 use crate::provider::Provider;
 use crate::services::{
-    skill::SkillRepo, ConfigService, EndpointLatency, McpService, PromptService, ProviderService,
-    SkillService, SyncDecision, WebDavSyncService,
+    skill::SkillRepo, ConfigService, EndpointLatency, HealthStatus, McpService, PromptService,
+    ProviderService, SkillService, StreamCheckResult, StreamCheckService, SyncDecision,
+    WebDavSyncService,
 };
 use crate::settings::{
     get_webdav_sync_settings, set_webdav_sync_settings, webdav_jianguoyun_preset,
@@ -50,6 +51,21 @@ enum SpeedtestMsg {
     Finished {
         url: String,
         result: Result<Vec<EndpointLatency>, String>,
+    },
+}
+
+#[derive(Debug, Clone)]
+struct StreamCheckReq {
+    app_type: AppType,
+    provider_id: String,
+    provider_name: String,
+    provider: Provider,
+}
+
+enum StreamCheckMsg {
+    Finished {
+        req: StreamCheckReq,
+        result: Result<StreamCheckResult, String>,
     },
 }
 
@@ -129,6 +145,12 @@ enum WebDavMsg {
 struct SpeedtestSystem {
     req_tx: mpsc::Sender<String>,
     result_rx: mpsc::Receiver<SpeedtestMsg>,
+    _handle: std::thread::JoinHandle<()>,
+}
+
+struct StreamCheckSystem {
+    req_tx: mpsc::Sender<StreamCheckReq>,
+    result_rx: mpsc::Receiver<StreamCheckMsg>,
     _handle: std::thread::JoinHandle<()>,
 }
 
@@ -399,6 +421,17 @@ pub fn run(app_override: Option<AppType>) -> Result<(), AppError> {
         }
     };
 
+    let stream_check = match start_stream_check_system() {
+        Ok(system) => Some(system),
+        Err(err) => {
+            app.push_toast(
+                texts::tui_toast_stream_check_unavailable(&err.to_string()),
+                ToastKind::Warning,
+            );
+            None
+        }
+    };
+
     let skills = match start_skills_system() {
         Ok(system) => Some(system),
         Err(err) => {
@@ -475,6 +508,12 @@ pub fn run(app_override: Option<AppType>) -> Result<(), AppError> {
             }
         }
 
+        if let Some(stream_check) = stream_check.as_ref() {
+            while let Ok(msg) = stream_check.result_rx.try_recv() {
+                handle_stream_check_msg(&mut app, msg);
+            }
+        }
+
         // Handle async local environment check results (non-blocking).
         if let Some(local_env) = local_env.as_ref() {
             while let Ok(msg) = local_env.result_rx.try_recv() {
@@ -525,6 +564,7 @@ pub fn run(app_override: Option<AppType>) -> Result<(), AppError> {
                         &mut app,
                         &mut data,
                         speedtest.as_ref().map(|s| &s.req_tx),
+                        stream_check.as_ref().map(|s| &s.req_tx),
                         skills.as_ref().map(|s| &s.req_tx),
                         local_env.as_ref().map(|s| &s.req_tx),
                         webdav.as_ref().map(|s| &s.req_tx),
@@ -557,6 +597,7 @@ pub fn run(app_override: Option<AppType>) -> Result<(), AppError> {
                             &mut app,
                             &mut data,
                             speedtest.as_ref().map(|s| &s.req_tx),
+                            stream_check.as_ref().map(|s| &s.req_tx),
                             skills.as_ref().map(|s| &s.req_tx),
                             local_env.as_ref().map(|s| &s.req_tx),
                             webdav.as_ref().map(|s| &s.req_tx),
@@ -592,6 +633,74 @@ pub fn run(app_override: Option<AppType>) -> Result<(), AppError> {
     }
 
     Ok(())
+}
+
+fn stream_check_status_label(status: &HealthStatus) -> &'static str {
+    match status {
+        HealthStatus::Operational => texts::tui_stream_check_status_operational(),
+        HealthStatus::Degraded => texts::tui_stream_check_status_degraded(),
+        HealthStatus::Failed => texts::tui_stream_check_status_failed(),
+    }
+}
+
+fn build_stream_check_result_lines(provider_name: &str, result: &StreamCheckResult) -> Vec<String> {
+    let response_time = result
+        .response_time_ms
+        .map(|ms| texts::tui_latency_ms(ms as u128))
+        .unwrap_or_else(|| texts::tui_na().to_string());
+    let http_status = result
+        .http_status
+        .map(|status| status.to_string())
+        .unwrap_or_else(|| texts::tui_na().to_string());
+    let model = if result.model_used.trim().is_empty() {
+        texts::tui_na().to_string()
+    } else {
+        result.model_used.clone()
+    };
+
+    vec![
+        texts::tui_stream_check_line_provider(provider_name),
+        texts::tui_stream_check_line_status(stream_check_status_label(&result.status)),
+        texts::tui_stream_check_line_response_time(&response_time),
+        texts::tui_stream_check_line_http_status(&http_status),
+        texts::tui_stream_check_line_model(&model),
+        texts::tui_stream_check_line_retries(&result.retry_count.to_string()),
+        texts::tui_stream_check_line_message(&result.message),
+    ]
+}
+
+fn handle_stream_check_msg(app: &mut App, msg: StreamCheckMsg) {
+    match msg {
+        StreamCheckMsg::Finished { req, result } => match result {
+            Ok(result) => {
+                let lines = build_stream_check_result_lines(&req.provider_name, &result);
+                match &app.overlay {
+                    Overlay::StreamCheckRunning { provider_id, .. }
+                        if provider_id == &req.provider_id =>
+                    {
+                        app.overlay = Overlay::StreamCheckResult {
+                            provider_name: req.provider_name,
+                            lines,
+                            scroll: 0,
+                        };
+                    }
+                    _ => {
+                        app.push_toast(
+                            texts::tui_toast_stream_check_finished(),
+                            ToastKind::Success,
+                        );
+                    }
+                }
+            }
+            Err(err) => {
+                app.push_toast(texts::tui_toast_stream_check_failed(&err), ToastKind::Error);
+                if matches!(&app.overlay, Overlay::StreamCheckRunning { provider_id, .. } if provider_id == &req.provider_id)
+                {
+                    app.overlay = Overlay::None;
+                }
+            }
+        },
+    }
 }
 
 fn handle_speedtest_msg(app: &mut App, msg: SpeedtestMsg) {
@@ -929,6 +1038,7 @@ fn handle_action(
     app: &mut App,
     data: &mut UiData,
     speedtest_req_tx: Option<&mpsc::Sender<String>>,
+    stream_check_req_tx: Option<&mpsc::Sender<StreamCheckReq>>,
     skills_req_tx: Option<&mpsc::Sender<SkillsReq>>,
     local_env_req_tx: Option<&mpsc::Sender<LocalEnvReq>>,
     webdav_req_tx: Option<&mpsc::Sender<WebDavReq>>,
@@ -1598,6 +1708,38 @@ fn handle_action(
                 }
                 app.push_toast(
                     texts::tui_toast_speedtest_request_failed(&err.to_string()),
+                    ToastKind::Error,
+                );
+            }
+            Ok(())
+        }
+        Action::ProviderStreamCheck { id } => {
+            let Some(tx) = stream_check_req_tx else {
+                if matches!(&app.overlay, Overlay::StreamCheckRunning { provider_id, .. } if provider_id == &id)
+                {
+                    app.overlay = Overlay::None;
+                }
+                app.push_toast(texts::tui_toast_stream_check_disabled(), ToastKind::Warning);
+                return Ok(());
+            };
+
+            let Some(row) = data.providers.rows.iter().find(|row| row.id == id) else {
+                return Ok(());
+            };
+            let req = StreamCheckReq {
+                app_type: app.app_type.clone(),
+                provider_id: row.id.clone(),
+                provider_name: row.provider.name.clone(),
+                provider: row.provider.clone(),
+            };
+
+            if let Err(err) = tx.send(req) {
+                if matches!(&app.overlay, Overlay::StreamCheckRunning { provider_id, .. } if provider_id == &id)
+                {
+                    app.overlay = Overlay::None;
+                }
+                app.push_toast(
+                    texts::tui_toast_stream_check_request_failed(&err.to_string()),
                     ToastKind::Error,
                 );
             }
@@ -2444,6 +2586,89 @@ fn webdav_worker_loop(rx: mpsc::Receiver<WebDavReq>, tx: mpsc::Sender<WebDavMsg>
     }
 }
 
+fn start_stream_check_system() -> Result<StreamCheckSystem, AppError> {
+    let (result_tx, result_rx) = mpsc::channel::<StreamCheckMsg>();
+    let (req_tx, req_rx) = mpsc::channel::<StreamCheckReq>();
+
+    let handle = std::thread::Builder::new()
+        .name("cc-switch-stream-check".to_string())
+        .spawn(move || stream_check_worker_loop(req_rx, result_tx))
+        .map_err(|e| AppError::IoContext {
+            context: "failed to spawn stream check worker thread".to_string(),
+            source: e,
+        })?;
+
+    Ok(StreamCheckSystem {
+        req_tx,
+        result_rx,
+        _handle: handle,
+    })
+}
+
+fn stream_check_worker_loop(rx: mpsc::Receiver<StreamCheckReq>, tx: mpsc::Sender<StreamCheckMsg>) {
+    let rt = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            let err = e.to_string();
+            while let Ok(req) = rx.recv() {
+                let _ = tx.send(StreamCheckMsg::Finished {
+                    req,
+                    result: Err(err.clone()),
+                });
+            }
+            return;
+        }
+    };
+
+    while let Ok(mut req) = rx.recv() {
+        for next in rx.try_iter() {
+            req = next;
+        }
+
+        let db = match crate::Database::init() {
+            Ok(db) => db,
+            Err(err) => {
+                let _ = tx.send(StreamCheckMsg::Finished {
+                    req,
+                    result: Err(err.to_string()),
+                });
+                continue;
+            }
+        };
+
+        let config = match db.get_stream_check_config() {
+            Ok(config) => config,
+            Err(err) => {
+                let _ = tx.send(StreamCheckMsg::Finished {
+                    req,
+                    result: Err(err.to_string()),
+                });
+                continue;
+            }
+        };
+
+        let result = rt
+            .block_on(async {
+                StreamCheckService::check_with_retry(&req.app_type, &req.provider, &config).await
+            })
+            .map_err(|err| err.to_string());
+
+        if let Ok(ref ok) = result {
+            let _ = db.save_stream_check_log(
+                &req.provider_id,
+                &req.provider_name,
+                req.app_type.as_str(),
+                ok,
+            );
+        }
+
+        let _ = tx.send(StreamCheckMsg::Finished { req, result });
+    }
+}
+
 fn start_speedtest_system() -> Result<SpeedtestSystem, AppError> {
     let (result_tx, result_rx) = mpsc::channel::<SpeedtestMsg>();
     let (req_tx, req_rx) = mpsc::channel::<String>();
@@ -2867,6 +3092,29 @@ mod tests {
 
         assert!(err.to_string().contains("save failed"));
         assert!(!checked, "connection check should not run when save fails");
+    }
+
+    #[test]
+    fn stream_check_result_lines_include_core_fields() {
+        let result = crate::services::stream_check::StreamCheckResult {
+            status: crate::services::stream_check::HealthStatus::Degraded,
+            success: true,
+            message: "slow but working".to_string(),
+            response_time_ms: Some(6789),
+            http_status: Some(200),
+            model_used: "gpt-5.1-codex".to_string(),
+            tested_at: 1_700_000_000,
+            retry_count: 1,
+        };
+
+        let lines = super::build_stream_check_result_lines("Provider One", &result);
+        let joined = lines.join("\n");
+
+        assert!(joined.contains("Provider One"));
+        assert!(joined.contains("gpt-5.1-codex"));
+        assert!(joined.contains("200"));
+        assert!(joined.contains("6789"));
+        assert!(joined.contains("slow but working"));
     }
 
     #[test]

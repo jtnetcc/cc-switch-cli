@@ -2613,6 +2613,7 @@ fn render_providers(
                 ("e", texts::tui_key_edit()),
                 ("d", texts::tui_key_delete()),
                 ("t", texts::tui_key_speedtest()),
+                ("c", texts::tui_key_stream_check()),
             ],
         );
     }
@@ -2704,6 +2705,7 @@ fn render_provider_detail(
                 ("s", texts::tui_key_switch()),
                 ("e", texts::tui_key_edit()),
                 ("t", texts::tui_key_speedtest()),
+                ("c", texts::tui_key_stream_check()),
             ],
         );
     }
@@ -4062,6 +4064,71 @@ fn render_overlay(frame: &mut Frame<'_>, app: &App, data: &UiData, theme: &super
 
             frame.render_widget(Paragraph::new(shown).wrap(Wrap { trim: false }), chunks[1]);
         }
+        Overlay::StreamCheckRunning { provider_name, .. } => {
+            let area = centered_rect_fixed(OVERLAY_FIXED_MD.0, OVERLAY_FIXED_MD.1, content_area);
+            frame.render_widget(Clear, area);
+            let outer = Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Plain)
+                .border_style(overlay_border_style(theme, false))
+                .title(texts::tui_stream_check_title());
+            frame.render_widget(outer.clone(), area);
+            let inner = outer.inner(area);
+
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(1), Constraint::Min(0)])
+                .split(inner);
+
+            render_key_bar_center(frame, chunks[0], theme, &[("Esc", texts::tui_key_close())]);
+            frame.render_widget(
+                Paragraph::new(Line::raw(texts::tui_stream_check_running(provider_name)))
+                    .wrap(Wrap { trim: false }),
+                chunks[1],
+            );
+        }
+        Overlay::StreamCheckResult {
+            provider_name,
+            lines,
+            scroll,
+        } => {
+            let area = centered_rect(OVERLAY_LG.0, OVERLAY_LG.1, content_area);
+            frame.render_widget(Clear, area);
+
+            let title = texts::tui_stream_check_title_with_provider(provider_name);
+            let outer = Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Plain)
+                .border_style(overlay_border_style(theme, false))
+                .title(title);
+            frame.render_widget(outer.clone(), area);
+            let inner = outer.inner(area);
+
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(1), Constraint::Min(0)])
+                .split(inner);
+
+            render_key_bar_center(
+                frame,
+                chunks[0],
+                theme,
+                &[
+                    ("↑↓", texts::tui_key_scroll()),
+                    ("Esc", texts::tui_key_close()),
+                ],
+            );
+
+            let height = chunks[1].height as usize;
+            let start = (*scroll).min(lines.len());
+            let end = (start + height).min(lines.len());
+            let shown = lines[start..end]
+                .iter()
+                .map(|s| Line::raw(s.clone()))
+                .collect::<Vec<_>>();
+
+            frame.render_widget(Paragraph::new(shown).wrap(Wrap { trim: false }), chunks[1]);
+        }
         Overlay::UpdateAvailable {
             current,
             latest,
@@ -5125,6 +5192,30 @@ mod tests {
             .find(|(key, _label)| *key == "Enter")
             .map(|(_key, label)| *label);
         assert_eq!(enter_label, Some(texts::tui_key_fetch_model()));
+    }
+
+    #[test]
+    fn provider_detail_key_bar_shows_stream_check_hint() {
+        let _lock = lock_env();
+        let _no_color = EnvGuard::remove("NO_COLOR");
+
+        let mut app = App::new(Some(AppType::Claude));
+        app.route = Route::ProviderDetail {
+            id: "p1".to_string(),
+        };
+        app.focus = Focus::Content;
+        let data = minimal_data(&app.app_type);
+
+        let buf = render(&app, &data);
+        let mut all = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                all.push_str(buf[(x, y)].symbol());
+            }
+            all.push('\n');
+        }
+
+        assert!(all.contains("stream check"));
     }
 
     #[test]

@@ -7,6 +7,7 @@ pub mod prompt;
 pub mod provider;
 pub mod skill;
 pub mod speedtest;
+pub mod stream_check;
 pub mod webdav;
 pub mod webdav_sync;
 
@@ -16,4 +17,5 @@ pub use prompt::PromptService;
 pub use provider::ProviderService;
 pub use skill::SkillService;
 pub use speedtest::{EndpointLatency, SpeedtestService};
+pub use stream_check::{HealthStatus, StreamCheckConfig, StreamCheckResult, StreamCheckService};
 pub use webdav_sync::{SyncDecision, WebDavSyncService, WebDavSyncSummary};

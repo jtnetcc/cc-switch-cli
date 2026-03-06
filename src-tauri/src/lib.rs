@@ -45,8 +45,9 @@ pub use mcp::{
 };
 pub use provider::{Provider, ProviderMeta};
 pub use services::{
-    ConfigService, EndpointLatency, McpService, PromptService, ProviderService, SkillService,
-    SpeedtestService, SyncDecision, WebDavSyncService, WebDavSyncSummary,
+    ConfigService, EndpointLatency, HealthStatus, McpService, PromptService, ProviderService,
+    SkillService, SpeedtestService, StreamCheckConfig, StreamCheckResult, StreamCheckService,
+    SyncDecision, WebDavSyncService, WebDavSyncSummary,
 };
 pub use settings::{
     get_enable_claude_plugin_integration, get_skip_claude_onboarding, get_webdav_sync_settings,

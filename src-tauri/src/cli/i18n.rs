@@ -478,17 +478,17 @@ pub mod texts {
 
     pub fn tui_footer_action_keys_providers() -> &'static str {
         if is_chinese() {
-            "[ ] 切换应用  Enter 详情  s 切换  a 添加  e 编辑  d 删除  t 测速  / 过滤  Esc 返回  ? 帮助"
+            "[ ] 切换应用  Enter 详情  s 切换  a 添加  e 编辑  d 删除  t 测速  c 健康检查  / 过滤  Esc 返回  ? 帮助"
         } else {
-            "[ ] switch app  Enter details  s switch  a add  e edit  d delete  t speedtest  / filter  Esc back  ? help"
+            "[ ] switch app  Enter details  s switch  a add  e edit  d delete  t speedtest  c stream check  / filter  Esc back  ? help"
         }
     }
 
     pub fn tui_footer_action_keys_provider_detail() -> &'static str {
         if is_chinese() {
-            "[ ] 切换应用  s 切换  e 编辑  t 测速  / 过滤  Esc 返回  ? 帮助"
+            "[ ] 切换应用  s 切换  e 编辑  t 测速  c 健康检查  / 过滤  Esc 返回  ? 帮助"
         } else {
-            "[ ] switch app  s switch  e edit  t speedtest  / filter  Esc back  ? help"
+            "[ ] switch app  s switch  e edit  t speedtest  c stream check  / filter  Esc back  ? help"
         }
     }
 
@@ -558,9 +558,9 @@ pub mod texts {
 
     pub fn tui_help_text() -> &'static str {
         if is_chinese() {
-            "[ ]  切换应用\n←→  切换菜单/内容焦点\n↑↓  移动\n/   过滤\nEsc  返回\n?   显示/关闭帮助\n\n页面快捷键（在页面内容区顶部显示）：\n- Providers: Enter 详情，s 切换，a 添加，e 编辑，d 删除，t 测速\n- Provider Detail: s 切换，e 编辑，t 测速\n- MCP: x 启用/禁用(当前应用)，m 选择应用，a 添加，e 编辑，i 导入，v 校验命令，d 删除\n- Prompts: Enter 查看，a 激活，x 取消激活(当前)，e 编辑，d 删除\n- Skills: Enter 详情，x 启用/禁用(当前应用)，a 安装，d 卸载，f 发现，u 未管理，r 仓库，s 同步，m 同步方式\n- Config: Enter 打开/执行，e 编辑片段\n- Settings: Enter 应用"
+            "[ ]  切换应用\n←→  切换菜单/内容焦点\n↑↓  移动\n/   过滤\nEsc  返回\n?   显示/关闭帮助\n\n页面快捷键（在页面内容区顶部显示）：\n- Providers: Enter 详情，s 切换，a 添加，e 编辑，d 删除，t 测速，c 健康检查\n- Provider Detail: s 切换，e 编辑，t 测速，c 健康检查\n- MCP: x 启用/禁用(当前应用)，m 选择应用，a 添加，e 编辑，i 导入，v 校验命令，d 删除\n- Prompts: Enter 查看，a 激活，x 取消激活(当前)，e 编辑，d 删除\n- Skills: Enter 详情，x 启用/禁用(当前应用)，a 安装，d 卸载，f 发现，u 未管理，r 仓库，s 同步，m 同步方式\n- Config: Enter 打开/执行，e 编辑片段\n- Settings: Enter 应用"
         } else {
-            "[ ]  switch app\n←→  focus menu/content\n↑↓  move\n/   filter\nEsc  back\n?   toggle help\n\nPage keys (shown at the top of each page):\n- Providers: Enter details, s switch, a add, e edit, d delete, t speedtest\n- Provider Detail: s switch, e edit, t speedtest\n- MCP: x toggle current, m select apps, a add, e edit, i import, v validate, d delete\n- Prompts: Enter view, a activate, x deactivate active, e edit, d delete\n- Skills: Enter details, x toggle current, a install, d uninstall, f discover, u unmanaged, r repos, s sync, m sync method\n- Config: Enter open/run, e edit snippet\n- Settings: Enter apply"
+            "[ ]  switch app\n←→  focus menu/content\n↑↓  move\n/   filter\nEsc  back\n?   toggle help\n\nPage keys (shown at the top of each page):\n- Providers: Enter details, s switch, a add, e edit, d delete, t speedtest, c stream check\n- Provider Detail: s switch, e edit, t speedtest, c stream check\n- MCP: x toggle current, m select apps, a add, e edit, i import, v validate, d delete\n- Prompts: Enter view, a activate, x deactivate active, e edit, d delete\n- Skills: Enter details, x toggle current, a install, d uninstall, f discover, u unmanaged, r repos, s sync, m sync method\n- Config: Enter open/run, e edit snippet\n- Settings: Enter apply"
         }
     }
 
@@ -677,6 +677,14 @@ pub mod texts {
             "测速"
         } else {
             "Speedtest"
+        }
+    }
+
+    pub fn tui_stream_check_title() -> &'static str {
+        if is_chinese() {
+            "健康检查"
+        } else {
+            "Stream Check"
         }
     }
 
@@ -1270,9 +1278,9 @@ pub mod texts {
 
     pub fn tui_provider_detail_keys() -> &'static str {
         if is_chinese() {
-            "按键：s=切换  e=编辑  t=测速"
+            "按键：s=切换  e=编辑  t=测速  c=健康检查"
         } else {
-            "Keys: s=switch  e=edit  t=speedtest"
+            "Keys: s=switch  e=edit  t=speedtest  c=stream check"
         }
     }
 
@@ -1297,6 +1305,38 @@ pub mod texts {
             "测速"
         } else {
             "speedtest"
+        }
+    }
+
+    pub fn tui_key_stream_check() -> &'static str {
+        if is_chinese() {
+            "健康检查"
+        } else {
+            "stream check"
+        }
+    }
+
+    pub fn tui_stream_check_status_operational() -> &'static str {
+        if is_chinese() {
+            "正常"
+        } else {
+            "operational"
+        }
+    }
+
+    pub fn tui_stream_check_status_degraded() -> &'static str {
+        if is_chinese() {
+            "降级"
+        } else {
+            "degraded"
+        }
+    }
+
+    pub fn tui_stream_check_status_failed() -> &'static str {
+        if is_chinese() {
+            "失败"
+        } else {
+            "failed"
         }
     }
 
@@ -2261,6 +2301,22 @@ pub mod texts {
         }
     }
 
+    pub fn tui_stream_check_running(provider_name: &str) -> String {
+        if is_chinese() {
+            format!("正在检查: {}", provider_name)
+        } else {
+            format!("Checking: {}", provider_name)
+        }
+    }
+
+    pub fn tui_stream_check_title_with_provider(provider_name: &str) -> String {
+        if is_chinese() {
+            format!("健康检查: {}", provider_name)
+        } else {
+            format!("Stream Check: {}", provider_name)
+        }
+    }
+
     pub fn tui_toast_provider_already_in_use() -> &'static str {
         if is_chinese() {
             "已在使用该供应商。"
@@ -2593,6 +2649,62 @@ pub mod texts {
         format!("URL: {}", url)
     }
 
+    pub fn tui_stream_check_line_provider(provider_name: &str) -> String {
+        if is_chinese() {
+            format!("供应商: {provider_name}")
+        } else {
+            format!("Provider: {provider_name}")
+        }
+    }
+
+    pub fn tui_stream_check_line_status(status: &str) -> String {
+        if is_chinese() {
+            format!("状态:   {status}")
+        } else {
+            format!("Status:  {status}")
+        }
+    }
+
+    pub fn tui_stream_check_line_response_time(response_time: &str) -> String {
+        if is_chinese() {
+            format!("耗时:   {response_time}")
+        } else {
+            format!("Time:    {response_time}")
+        }
+    }
+
+    pub fn tui_stream_check_line_http_status(status: &str) -> String {
+        if is_chinese() {
+            format!("HTTP:   {status}")
+        } else {
+            format!("HTTP:    {status}")
+        }
+    }
+
+    pub fn tui_stream_check_line_model(model: &str) -> String {
+        if is_chinese() {
+            format!("模型:   {model}")
+        } else {
+            format!("Model:   {model}")
+        }
+    }
+
+    pub fn tui_stream_check_line_retries(retries: &str) -> String {
+        if is_chinese() {
+            format!("重试:   {retries}")
+        } else {
+            format!("Retries: {retries}")
+        }
+    }
+
+    pub fn tui_stream_check_line_message(message: &str) -> String {
+        if is_chinese() {
+            format!("信息:   {message}")
+        } else {
+            format!("Message: {message}")
+        }
+    }
+
     pub fn tui_speedtest_line_latency(latency: &str) -> String {
         if is_chinese() {
             format!("延迟:   {latency}")
@@ -2678,6 +2790,46 @@ pub mod texts {
             format!("测速请求失败: {err}")
         } else {
             format!("Failed to enqueue speedtest: {err}")
+        }
+    }
+
+    pub fn tui_toast_stream_check_finished() -> &'static str {
+        if is_chinese() {
+            "健康检查完成。"
+        } else {
+            "Stream check finished."
+        }
+    }
+
+    pub fn tui_toast_stream_check_failed(err: &str) -> String {
+        if is_chinese() {
+            format!("健康检查失败: {err}")
+        } else {
+            format!("Stream check failed: {err}")
+        }
+    }
+
+    pub fn tui_toast_stream_check_unavailable(err: &str) -> String {
+        if is_chinese() {
+            format!("健康检查不可用: {err}")
+        } else {
+            format!("Stream check unavailable: {err}")
+        }
+    }
+
+    pub fn tui_toast_stream_check_disabled() -> &'static str {
+        if is_chinese() {
+            "本次会话健康检查不可用。"
+        } else {
+            "Stream check is disabled for this session."
+        }
+    }
+
+    pub fn tui_toast_stream_check_request_failed(err: &str) -> String {
+        if is_chinese() {
+            format!("健康检查请求失败: {err}")
+        } else {
+            format!("Failed to enqueue stream check: {err}")
         }
     }
 
