@@ -32,9 +32,9 @@ impl NavItem {
         NavItem::Main,
         NavItem::Providers,
         NavItem::Mcp,
+        NavItem::Skills,
         NavItem::Prompts,
         NavItem::Config,
-        NavItem::Skills,
         NavItem::Settings,
         NavItem::Exit,
     ];
@@ -50,5 +50,27 @@ impl NavItem {
             NavItem::Settings => Some(Route::Settings),
             NavItem::Exit => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::NavItem;
+
+    #[test]
+    fn skills_appears_before_prompts_in_nav() {
+        let skills = NavItem::ALL
+            .iter()
+            .position(|item| matches!(item, NavItem::Skills))
+            .expect("skills nav item should exist");
+        let prompts = NavItem::ALL
+            .iter()
+            .position(|item| matches!(item, NavItem::Prompts))
+            .expect("prompts nav item should exist");
+
+        assert!(
+            skills < prompts,
+            "skills should appear above prompts in the left nav"
+        );
     }
 }

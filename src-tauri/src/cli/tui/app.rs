@@ -102,7 +102,6 @@ pub enum TextSubmit {
     ConfigExport,
     ConfigImport,
     ConfigBackupName,
-    McpValidateCommand,
     SkillsInstallSpec,
     SkillsDiscoverQuery,
     SkillsRepoAdd,
@@ -170,6 +169,12 @@ pub enum Overlay {
         name: String,
         selected: usize,
         apps: crate::app_config::McpApps,
+    },
+    SkillsAppsPicker {
+        directory: String,
+        name: String,
+        selected: usize,
+        apps: crate::app_config::SkillApps,
     },
     SkillsSyncMethodPicker {
         selected: usize,
@@ -532,6 +537,10 @@ pub enum Action {
         directory: String,
         enabled: bool,
     },
+    SkillsSetApps {
+        directory: String,
+        apps: crate::app_config::SkillApps,
+    },
     SkillsInstall {
         spec: String,
     },
@@ -595,9 +604,6 @@ pub enum Action {
         id: String,
     },
     McpImport,
-    McpValidate {
-        command: String,
-    },
 
     PromptActivate {
         id: String,
@@ -1073,6 +1079,34 @@ impl App {
                     enabled,
                 }
             }
+            KeyCode::Char('m') => {
+                let Some(skill) = visible.get(self.skills_idx) else {
+                    return Action::None;
+                };
+                self.overlay = Overlay::SkillsAppsPicker {
+                    directory: skill.directory.clone(),
+                    name: skill.name.clone(),
+                    selected: app_type_picker_index(&self.app_type),
+                    apps: skill.apps.clone(),
+                };
+                Action::None
+            }
+            KeyCode::Char('d') => {
+                let Some(skill) = visible.get(self.skills_idx) else {
+                    return Action::None;
+                };
+                self.overlay = Overlay::Confirm(ConfirmOverlay {
+                    title: texts::tui_skills_uninstall_title().to_string(),
+                    message: texts::tui_confirm_uninstall_skill_message(
+                        &skill.name,
+                        &skill.directory,
+                    ),
+                    action: ConfirmAction::SkillsUninstall {
+                        directory: skill.directory.clone(),
+                    },
+                });
+                Action::None
+            }
             KeyCode::Char('i') => self.push_route_and_switch(Route::SkillsUnmanaged),
             _ => Action::None,
         }
@@ -1230,6 +1264,15 @@ impl App {
                 directory: skill.directory.clone(),
                 enabled: !skill.apps.is_enabled_for(&self.app_type),
             },
+            KeyCode::Char('m') => {
+                self.overlay = Overlay::SkillsAppsPicker {
+                    directory: skill.directory.clone(),
+                    name: skill.name.clone(),
+                    selected: app_type_picker_index(&self.app_type),
+                    apps: skill.apps.clone(),
+                };
+                Action::None
+            }
             KeyCode::Char('d') => {
                 self.overlay = Overlay::Confirm(ConfirmOverlay {
                     title: texts::tui_skills_uninstall_title().to_string(),
@@ -1421,16 +1464,6 @@ impl App {
                 Action::None
             }
             KeyCode::Char('i') => Action::McpImport,
-            KeyCode::Char('v') => {
-                self.overlay = Overlay::TextInput(TextInputState {
-                    title: texts::tui_input_validate_command_title().to_string(),
-                    prompt: texts::tui_input_validate_command_prompt().to_string(),
-                    buffer: String::new(),
-                    submit: TextSubmit::McpValidateCommand,
-                    secret: false,
-                });
-                Action::None
-            }
             KeyCode::Char('d') => {
                 let Some(row) = visible.get(self.mcp_idx) else {
                     return Action::None;
@@ -1903,16 +1936,6 @@ impl App {
                             let name = if raw.is_empty() { None } else { Some(raw) };
                             Action::ConfigBackup { name }
                         }
-                        TextSubmit::McpValidateCommand => {
-                            if raw.is_empty() {
-                                self.push_toast(
-                                    texts::tui_toast_command_empty(),
-                                    ToastKind::Warning,
-                                );
-                                return Action::None;
-                            }
-                            Action::McpValidate { command: raw }
-                        }
                         TextSubmit::SkillsInstallSpec => {
                             if raw.is_empty() {
                                 self.push_toast(
@@ -2377,6 +2400,53 @@ impl App {
                         Action::None
                     } else {
                         Action::McpSetApps { id, apps: next }
+                    }
+                }
+                _ => Action::None,
+            },
+            Overlay::SkillsAppsPicker {
+                directory,
+                selected,
+                apps,
+                ..
+            } => match key.code {
+                KeyCode::Esc => {
+                    self.overlay = Overlay::None;
+                    Action::None
+                }
+                KeyCode::Up => {
+                    *selected = selected.saturating_sub(1);
+                    Action::None
+                }
+                KeyCode::Down => {
+                    *selected = (*selected + 1).min(3);
+                    Action::None
+                }
+                KeyCode::Char('x') | KeyCode::Char(' ') => {
+                    let app_type = app_type_for_picker_index(*selected);
+                    let enabled = apps.is_enabled_for(&app_type);
+                    apps.set_enabled_for(&app_type, !enabled);
+                    Action::None
+                }
+                KeyCode::Enter => {
+                    let directory = directory.clone();
+                    let next = apps.clone();
+                    let unchanged = data
+                        .skills
+                        .installed
+                        .iter()
+                        .find(|skill| skill.directory == directory)
+                        .map(|skill| skill.apps == next)
+                        .unwrap_or(false);
+
+                    self.overlay = Overlay::None;
+                    if unchanged {
+                        Action::None
+                    } else {
+                        Action::SkillsSetApps {
+                            directory,
+                            apps: next,
+                        }
                     }
                 }
                 _ => Action::None,
@@ -3931,6 +4001,113 @@ mod tests {
     }
 
     #[test]
+    fn skills_m_opens_apps_picker_overlay() {
+        let mut app = App::new(Some(AppType::Codex));
+        app.route = Route::Skills;
+        app.focus = Focus::Content;
+
+        let mut data = UiData::default();
+        data.skills
+            .installed
+            .push(crate::services::skill::InstalledSkill {
+                id: "local:hello-skill".to_string(),
+                name: "Hello Skill".to_string(),
+                description: None,
+                directory: "hello-skill".to_string(),
+                repo_owner: None,
+                repo_name: None,
+                repo_branch: None,
+                readme_url: None,
+                apps: crate::app_config::SkillApps::default(),
+                installed_at: 0,
+            });
+
+        let action = app.on_key(key(KeyCode::Char('m')), &data);
+        assert!(matches!(action, Action::None));
+        assert!(matches!(
+            &app.overlay,
+            Overlay::SkillsAppsPicker {
+                directory,
+                name,
+                selected: 1,
+                ..
+            } if directory == "hello-skill" && name == "Hello Skill"
+        ));
+    }
+
+    #[test]
+    fn skills_apps_picker_x_toggles_selected_app_and_enter_emits_action() {
+        let mut app = App::new(Some(AppType::Codex));
+        app.route = Route::Skills;
+        app.focus = Focus::Content;
+
+        let mut data = UiData::default();
+        data.skills
+            .installed
+            .push(crate::services::skill::InstalledSkill {
+                id: "local:hello-skill".to_string(),
+                name: "Hello Skill".to_string(),
+                description: None,
+                directory: "hello-skill".to_string(),
+                repo_owner: None,
+                repo_name: None,
+                repo_branch: None,
+                readme_url: None,
+                apps: crate::app_config::SkillApps::default(),
+                installed_at: 0,
+            });
+
+        app.on_key(key(KeyCode::Char('m')), &data);
+
+        let action = app.on_key(key(KeyCode::Char('x')), &data);
+        assert!(matches!(action, Action::None));
+        assert!(matches!(
+            &app.overlay,
+            Overlay::SkillsAppsPicker { apps, .. } if apps.codex
+        ));
+
+        let action = app.on_key(key(KeyCode::Enter), &data);
+        assert!(matches!(
+            action,
+            Action::SkillsSetApps { directory, apps }
+                if directory == "hello-skill" && apps.codex && !apps.claude && !apps.gemini
+        ));
+    }
+
+    #[test]
+    fn skills_d_opens_uninstall_confirm_from_list() {
+        let mut app = App::new(Some(AppType::Claude));
+        app.route = Route::Skills;
+        app.focus = Focus::Content;
+
+        let mut data = UiData::default();
+        data.skills
+            .installed
+            .push(crate::services::skill::InstalledSkill {
+                id: "local:hello-skill".to_string(),
+                name: "Hello Skill".to_string(),
+                description: None,
+                directory: "hello-skill".to_string(),
+                repo_owner: None,
+                repo_name: None,
+                repo_branch: None,
+                readme_url: None,
+                apps: crate::app_config::SkillApps::default(),
+                installed_at: 0,
+            });
+
+        let action = app.on_key(key(KeyCode::Char('d')), &data);
+        assert!(matches!(action, Action::None));
+        assert!(matches!(
+            &app.overlay,
+            Overlay::Confirm(ConfirmOverlay {
+                action: ConfirmAction::SkillsUninstall { directory },
+                ..
+            }) if directory == "hello-skill"
+        ));
+    }
+
+    #[test]
     fn config_e_key_opens_common_snippet_picker_when_selected() {
         let mut app = App::new(Some(AppType::Claude));
         app.route = Route::Config;
@@ -4261,6 +4438,17 @@ mod tests {
             app.editor.is_none(),
             "MCP 'a' should open the new add form (not the JSON editor)"
         );
+    }
+
+    #[test]
+    fn mcp_v_does_nothing() {
+        let mut app = App::new(Some(AppType::Claude));
+        app.route = Route::Mcp;
+        app.focus = Focus::Content;
+
+        let action = app.on_key(key(KeyCode::Char('v')), &data());
+        assert!(matches!(action, Action::None));
+        assert!(matches!(app.overlay, Overlay::None));
     }
 
     #[test]

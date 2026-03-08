@@ -169,6 +169,9 @@ const OVERLAY_MD: (u16, u16) = (78, 62);
 const OVERLAY_FIXED_LG: (u16, u16) = (70, 20);
 const OVERLAY_FIXED_MD: (u16, u16) = (60, 9);
 const OVERLAY_FIXED_SM: (u16, u16) = (50, 6);
+const TOAST_MIN_WIDTH: u16 = 28;
+const TOAST_MAX_WIDTH: u16 = 72;
+const TOAST_MIN_HEIGHT: u16 = 5;
 
 fn key_bar_line(theme: &super::theme::Theme, items: &[(&str, &str)]) -> Line<'static> {
     if theme.no_color {
@@ -227,6 +230,25 @@ fn render_key_bar_center(
     );
 }
 
+fn render_summary_bar(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    theme: &super::theme::Theme,
+    summary: String,
+) {
+    let summary_block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Plain)
+        .border_style(Style::default().fg(theme.dim));
+    frame.render_widget(
+        Paragraph::new(Line::raw(format!("  {summary}")))
+            .style(Style::default().fg(theme.dim))
+            .wrap(Wrap { trim: false })
+            .block(summary_block),
+        area,
+    );
+}
+
 fn inset_left(area: Rect, left: u16) -> Rect {
     if area.width <= left {
         return Rect {
@@ -241,6 +263,23 @@ fn inset_left(area: Rect, left: u16) -> Rect {
         y: area.y,
         width: area.width - left,
         height: area.height,
+    }
+}
+
+fn inset_top(area: Rect, top: u16) -> Rect {
+    if area.height <= top {
+        return Rect {
+            x: area.x,
+            y: area.y,
+            width: area.width,
+            height: area.height,
+        };
+    }
+    Rect {
+        x: area.x,
+        y: area.y + top,
+        width: area.width,
+        height: area.height - top,
     }
 }
 
@@ -276,6 +315,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App, data: &UiData) {
     render_footer(frame, app, root[2], &theme);
 
     render_overlay(frame, app, data, &theme);
+    render_toast(frame, app, &theme);
 }
 
 fn render_header(
@@ -539,6 +579,15 @@ fn skills_installed_filtered<'a>(
         .collect()
 }
 
+fn skill_display_name<'a>(name: &'a str, directory: &'a str) -> &'a str {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        directory
+    } else {
+        trimmed
+    }
+}
+
 fn render_skills_installed(
     frame: &mut Frame<'_>,
     app: &App,
@@ -571,6 +620,8 @@ fn render_skills_installed(
             &[
                 ("Enter", texts::tui_key_details()),
                 ("x", texts::tui_key_toggle()),
+                ("m", texts::tui_key_apps()),
+                ("d", texts::tui_key_uninstall()),
                 ("i", texts::tui_skills_action_import_existing()),
             ],
         );
@@ -607,17 +658,7 @@ fn render_skills_installed(
         enabled_opencode,
     );
 
-    let summary_block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Plain)
-        .border_style(Style::default().fg(theme.dim));
-    frame.render_widget(
-        Paragraph::new(Line::raw(format!("  {summary}")))
-            .style(Style::default().fg(theme.dim))
-            .wrap(Wrap { trim: false })
-            .block(summary_block),
-        chunks[1],
-    );
+    render_summary_bar(frame, chunks[1], theme, summary);
 
     let visible = skills_installed_filtered(app, data);
     if visible.is_empty() {
@@ -664,7 +705,6 @@ fn render_skills_installed(
 
     let header_style = Style::default().fg(theme.dim).add_modifier(Modifier::BOLD);
     let header = Row::new(vec![
-        Cell::from(texts::tui_header_directory()),
         Cell::from(texts::header_name()),
         Cell::from(texts::tui_header_claude_short()),
         Cell::from(texts::tui_header_codex_short()),
@@ -675,8 +715,7 @@ fn render_skills_installed(
 
     let rows = visible.iter().map(|skill| {
         Row::new(vec![
-            Cell::from(skill.directory.clone()),
-            Cell::from(skill.name.clone()),
+            Cell::from(skill_display_name(&skill.name, &skill.directory).to_string()),
             Cell::from(if skill.apps.claude {
                 texts::tui_marker_active()
             } else {
@@ -703,8 +742,7 @@ fn render_skills_installed(
     let table = Table::new(
         rows,
         [
-            Constraint::Percentage(50),
-            Constraint::Percentage(30),
+            Constraint::Min(10),
             Constraint::Length(3),
             Constraint::Length(3),
             Constraint::Length(3),
@@ -791,7 +829,6 @@ fn render_skills_discover(
     let header_style = Style::default().fg(theme.dim).add_modifier(Modifier::BOLD);
     let header = Row::new(vec![
         Cell::from(""),
-        Cell::from(texts::tui_header_directory()),
         Cell::from(texts::header_name()),
         Cell::from(texts::tui_header_repo()),
     ])
@@ -808,8 +845,7 @@ fn render_skills_discover(
             } else {
                 texts::tui_marker_inactive()
             }),
-            Cell::from(skill.directory.clone()),
-            Cell::from(skill.name.clone()),
+            Cell::from(skill_display_name(&skill.name, &skill.directory).to_string()),
             Cell::from(repo),
         ])
     });
@@ -818,9 +854,8 @@ fn render_skills_discover(
         rows,
         [
             Constraint::Length(2),
-            Constraint::Percentage(35),
-            Constraint::Percentage(40),
-            Constraint::Percentage(25),
+            Constraint::Percentage(70),
+            Constraint::Percentage(30),
         ],
     )
     .header(header)
@@ -1018,7 +1053,6 @@ fn render_skills_unmanaged(
     let header_style = Style::default().fg(theme.dim).add_modifier(Modifier::BOLD);
     let header = Row::new(vec![
         Cell::from(""),
-        Cell::from(texts::tui_header_directory()),
         Cell::from(texts::header_name()),
         Cell::from(texts::tui_header_found_in()),
     ])
@@ -1033,8 +1067,7 @@ fn render_skills_unmanaged(
                     texts::tui_marker_inactive()
                 },
             ),
-            Cell::from(skill.directory.clone()),
-            Cell::from(skill.name.clone()),
+            Cell::from(skill_display_name(&skill.name, &skill.directory).to_string()),
             Cell::from(skill.found_in.join(", ")),
         ])
     });
@@ -1043,9 +1076,8 @@ fn render_skills_unmanaged(
         rows,
         [
             Constraint::Length(2),
-            Constraint::Percentage(45),
-            Constraint::Percentage(35),
-            Constraint::Percentage(20),
+            Constraint::Percentage(72),
+            Constraint::Percentage(28),
         ],
     )
     .header(header)
@@ -1108,6 +1140,7 @@ fn render_skill_detail(
             theme,
             &[
                 ("x", texts::tui_key_toggle()),
+                ("m", texts::tui_key_apps()),
                 ("d", texts::tui_key_uninstall()),
                 ("s", texts::tui_key_sync()),
             ],
@@ -2885,7 +2918,11 @@ fn render_mcp(
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Min(0)])
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(3),
+            Constraint::Min(0),
+        ])
         .split(inner);
 
     if app.focus == Focus::Content {
@@ -2899,11 +2936,34 @@ fn render_mcp(
                 ("a", texts::tui_key_add()),
                 ("e", texts::tui_key_edit()),
                 ("i", texts::tui_key_import()),
-                ("v", texts::tui_key_validate()),
                 ("d", texts::tui_key_delete()),
             ],
         );
     }
+
+    let summary = texts::tui_mcp_server_counts(
+        data.mcp
+            .rows
+            .iter()
+            .filter(|row| row.server.apps.claude)
+            .count(),
+        data.mcp
+            .rows
+            .iter()
+            .filter(|row| row.server.apps.codex)
+            .count(),
+        data.mcp
+            .rows
+            .iter()
+            .filter(|row| row.server.apps.gemini)
+            .count(),
+        data.mcp
+            .rows
+            .iter()
+            .filter(|row| row.server.apps.opencode)
+            .count(),
+    );
+    render_summary_bar(frame, chunks[1], theme, summary);
 
     let table = Table::new(
         rows,
@@ -2923,7 +2983,7 @@ fn render_mcp(
     let mut state = TableState::default();
     state.select(Some(app.mcp_idx));
 
-    frame.render_stateful_widget(table, inset_left(chunks[1], CONTENT_INSET_LEFT), &mut state);
+    frame.render_stateful_widget(table, inset_left(chunks[2], CONTENT_INSET_LEFT), &mut state);
 }
 
 fn render_prompts(
@@ -3240,7 +3300,7 @@ fn render_settings(frame: &mut Frame<'_>, app: &App, area: Rect, theme: &super::
 }
 
 fn render_footer(frame: &mut Frame<'_>, app: &App, area: Rect, theme: &super::theme::Theme) {
-    let mut spans = if app.filter.active {
+    let spans = if app.filter.active {
         vec![Span::styled(
             texts::tui_footer_filter_mode(),
             Style::default().fg(theme.dim),
@@ -3296,19 +3356,131 @@ fn render_footer(frame: &mut Frame<'_>, app: &App, area: Rect, theme: &super::th
         }
     };
 
-    if let Some(toast) = &app.toast {
-        let (prefix, color) = match toast.kind {
-            ToastKind::Info => (texts::tui_toast_prefix_info(), theme.accent),
-            ToastKind::Success => (texts::tui_toast_prefix_success(), theme.ok),
-            ToastKind::Warning => (texts::tui_toast_prefix_warning(), theme.warn),
-            ToastKind::Error => (texts::tui_toast_prefix_error(), theme.err),
-        };
-        spans.push(Span::raw("  "));
-        spans.push(Span::styled(prefix, Style::default().fg(color)));
-        spans.push(Span::raw(toast.message.clone()));
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+fn render_toast(frame: &mut Frame<'_>, app: &App, theme: &super::theme::Theme) {
+    let Some(toast) = &app.toast else {
+        return;
+    };
+
+    let content_area = content_pane_rect(frame.area(), theme);
+    let (prefix, color) = match toast.kind {
+        ToastKind::Info => (texts::tui_toast_prefix_info(), theme.accent),
+        ToastKind::Success => (texts::tui_toast_prefix_success(), theme.ok),
+        ToastKind::Warning => (texts::tui_toast_prefix_warning(), theme.warn),
+        ToastKind::Error => (texts::tui_toast_prefix_error(), theme.err),
+    };
+    let message = format!("{} {}", prefix.trim(), toast.message);
+    let area = toast_rect(content_area, &message);
+
+    frame.render_widget(Clear, area);
+
+    let outer = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Plain)
+        .border_style(Style::default().fg(color).add_modifier(Modifier::BOLD))
+        .style(Style::default().bg(theme.surface));
+    frame.render_widget(outer.clone(), area);
+
+    let inner = outer.inner(area);
+    let text_style = if theme.no_color {
+        Style::default().add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+            .fg(color)
+            .bg(theme.surface)
+            .add_modifier(Modifier::BOLD)
+    };
+
+    frame.render_widget(
+        Paragraph::new(centered_message_lines(&message, inner.width, inner.height))
+            .alignment(Alignment::Center)
+            .style(text_style)
+            .wrap(Wrap { trim: false }),
+        inner,
+    );
+}
+
+fn compact_message_overlay_rect(content_area: Rect, title: &str, message: &str) -> Rect {
+    compact_lines_overlay_rect(content_area, title, &[message.to_string()])
+}
+
+fn should_use_compact_lines_overlay(content_area: Rect, title: &str, lines: &[String]) -> bool {
+    if lines.is_empty() || lines.len() > 8 {
+        return false;
     }
 
-    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+    let area = compact_lines_overlay_rect(content_area, title, lines);
+    area.width < content_area.width.saturating_sub(6) && area.height <= 12
+}
+
+fn compact_lines_overlay_rect(content_area: Rect, title: &str, lines: &[String]) -> Rect {
+    let max_width = content_area
+        .width
+        .saturating_sub(4)
+        .max(1)
+        .min(TOAST_MAX_WIDTH);
+    let min_width = 36.min(max_width);
+    let content_width = lines
+        .iter()
+        .map(|line| UnicodeWidthStr::width(line.as_str()))
+        .max()
+        .unwrap_or(0)
+        .max(UnicodeWidthStr::width(title)) as u16;
+    let width = content_width.saturating_add(8).clamp(min_width, max_width);
+
+    let inner_width = width.saturating_sub(2).max(1);
+    let wrapped_height = lines
+        .iter()
+        .map(|line| wrap_message_lines(line, inner_width).len().max(1) as u16)
+        .sum::<u16>()
+        .max(1);
+    let max_height = content_area.height.saturating_sub(4).max(1);
+    let height = wrapped_height.saturating_add(3).max(6).min(max_height);
+
+    centered_rect_fixed(width, height, content_area)
+}
+
+fn centered_text_lines(lines: &[String], width: u16, height: u16) -> Vec<Line<'static>> {
+    let mut wrapped = Vec::new();
+    for line in lines {
+        wrapped.extend(wrap_message_lines(line, width));
+    }
+    if wrapped.is_empty() {
+        wrapped.push(String::new());
+    }
+
+    let pad = height.saturating_sub(wrapped.len() as u16) / 2;
+    let mut out = Vec::with_capacity(pad as usize + wrapped.len());
+    for _ in 0..pad {
+        out.push(Line::raw(""));
+    }
+    out.extend(wrapped.into_iter().map(Line::raw));
+    out
+}
+
+fn toast_rect(content_area: Rect, message: &str) -> Rect {
+    let max_width = content_area
+        .width
+        .saturating_sub(4)
+        .max(1)
+        .min(TOAST_MAX_WIDTH);
+    let min_width = TOAST_MIN_WIDTH.min(max_width);
+    let width = (UnicodeWidthStr::width(message) as u16)
+        .saturating_add(8)
+        .clamp(min_width, max_width);
+
+    let inner_width = width.saturating_sub(2).max(1);
+    let wrapped_lines = wrap_message_lines(message, inner_width).len() as u16;
+    let max_height = content_area.height.saturating_sub(4).max(1);
+    let min_height = TOAST_MIN_HEIGHT.min(max_height);
+    let height = wrapped_lines
+        .saturating_add(2)
+        .max(min_height)
+        .min(max_height);
+
+    centered_rect_fixed(width, height, content_area)
 }
 
 fn render_overlay(frame: &mut Frame<'_>, app: &App, data: &UiData, theme: &super::theme::Theme) {
@@ -3335,11 +3507,13 @@ fn render_overlay(frame: &mut Frame<'_>, app: &App, data: &UiData, theme: &super
 
             render_key_bar_center(frame, chunks[0], theme, &[("Esc", texts::tui_key_close())]);
 
+            let body_area = inset_top(chunks[1], 1);
+
             let lines = texts::tui_help_text()
                 .lines()
                 .map(|s| Line::raw(s.to_string()))
                 .collect::<Vec<_>>();
-            frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), chunks[1]);
+            frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), body_area);
         }
         Overlay::Confirm(confirm) => {
             let area = centered_rect_fixed(OVERLAY_FIXED_MD.0, OVERLAY_FIXED_MD.1, content_area);
@@ -3356,6 +3530,7 @@ fn render_overlay(frame: &mut Frame<'_>, app: &App, data: &UiData, theme: &super
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Length(1), Constraint::Min(0)])
                 .split(inner);
+            let body_area = inset_top(chunks[1], 1);
 
             if matches!(confirm.action, ConfirmAction::EditorSaveBeforeClose) {
                 render_key_bar_center(
@@ -3371,11 +3546,11 @@ fn render_overlay(frame: &mut Frame<'_>, app: &App, data: &UiData, theme: &super
                 frame.render_widget(
                     Paragraph::new(centered_message_lines(
                         &confirm.message,
-                        chunks[1].width,
-                        chunks[1].height,
+                        body_area.width,
+                        body_area.height,
                     ))
                     .alignment(Alignment::Center),
-                    chunks[1],
+                    body_area,
                 );
             } else {
                 render_key_bar_center(
@@ -3390,11 +3565,11 @@ fn render_overlay(frame: &mut Frame<'_>, app: &App, data: &UiData, theme: &super
                 frame.render_widget(
                     Paragraph::new(centered_message_lines(
                         &confirm.message,
-                        chunks[1].width,
-                        chunks[1].height,
+                        body_area.width,
+                        body_area.height,
                     ))
                     .alignment(Alignment::Center),
-                    chunks[1],
+                    body_area,
                 );
             }
         }
@@ -3501,6 +3676,8 @@ fn render_overlay(frame: &mut Frame<'_>, app: &App, data: &UiData, theme: &super
                 ],
             );
 
+            let body_area = inset_top(chunks[1], 1);
+
             let items = data.config.backups.iter().map(|backup| {
                 ListItem::new(Line::from(Span::raw(format!(
                     "{}  ({})",
@@ -3514,7 +3691,7 @@ fn render_overlay(frame: &mut Frame<'_>, app: &App, data: &UiData, theme: &super
 
             let mut state = ListState::default();
             state.select(Some(*selected));
-            frame.render_stateful_widget(list, chunks[1], &mut state);
+            frame.render_stateful_widget(list, body_area, &mut state);
         }
         Overlay::TextView(view) => {
             let area = centered_rect(OVERLAY_LG.0, OVERLAY_LG.1, content_area);
@@ -3543,7 +3720,8 @@ fn render_overlay(frame: &mut Frame<'_>, app: &App, data: &UiData, theme: &super
                 ],
             );
 
-            let height = chunks[1].height as usize;
+            let body_area = inset_top(chunks[1], 1);
+            let height = body_area.height as usize;
             let start = view.scroll.min(view.lines.len());
             let end = (start + height).min(view.lines.len());
             let shown = view.lines[start..end]
@@ -3551,7 +3729,7 @@ fn render_overlay(frame: &mut Frame<'_>, app: &App, data: &UiData, theme: &super
                 .map(|s| Line::raw(s.clone()))
                 .collect::<Vec<_>>();
 
-            frame.render_widget(Paragraph::new(shown).wrap(Wrap { trim: false }), chunks[1]);
+            frame.render_widget(Paragraph::new(shown).wrap(Wrap { trim: false }), body_area);
         }
         Overlay::CommonSnippetPicker { selected } => {
             let area = centered_rect(48, 38, content_area);
@@ -3582,6 +3760,7 @@ fn render_overlay(frame: &mut Frame<'_>, app: &App, data: &UiData, theme: &super
                 ],
             );
 
+            let body_area = inset_top(chunks[1], 1);
             let labels = ["Claude", "Codex", "Gemini", "OpenCode"];
             let items = labels
                 .iter()
@@ -3593,7 +3772,7 @@ fn render_overlay(frame: &mut Frame<'_>, app: &App, data: &UiData, theme: &super
 
             let mut state = ListState::default();
             state.select(Some(*selected));
-            frame.render_stateful_widget(list, chunks[1], &mut state);
+            frame.render_stateful_widget(list, body_area, &mut state);
         }
         Overlay::CommonSnippetView { view, .. } => {
             let area = centered_rect(OVERLAY_LG.0, OVERLAY_LG.1, content_area);
@@ -3625,7 +3804,8 @@ fn render_overlay(frame: &mut Frame<'_>, app: &App, data: &UiData, theme: &super
                 ],
             );
 
-            let height = chunks[1].height as usize;
+            let body_area = inset_top(chunks[1], 1);
+            let height = body_area.height as usize;
             let start = view.scroll.min(view.lines.len());
             let end = (start + height).min(view.lines.len());
             let shown = view.lines[start..end]
@@ -3633,7 +3813,7 @@ fn render_overlay(frame: &mut Frame<'_>, app: &App, data: &UiData, theme: &super
                 .map(|s| Line::raw(s.clone()))
                 .collect::<Vec<_>>();
 
-            frame.render_widget(Paragraph::new(shown).wrap(Wrap { trim: false }), chunks[1]);
+            frame.render_widget(Paragraph::new(shown).wrap(Wrap { trim: false }), body_area);
         }
         Overlay::ClaudeModelPicker { selected, editing } => {
             let area = centered_rect(OVERLAY_MD.0, OVERLAY_MD.1, content_area);
@@ -3670,6 +3850,8 @@ fn render_overlay(frame: &mut Frame<'_>, app: &App, data: &UiData, theme: &super
                 ]
             };
             render_key_bar_center(frame, chunks[0], theme, &key_items);
+
+            let body_area = inset_top(chunks[1], 1);
 
             if let Some(FormState::ProviderAdd(provider)) = app.form.as_ref() {
                 let labels = [
@@ -3718,7 +3900,7 @@ fn render_overlay(frame: &mut Frame<'_>, app: &App, data: &UiData, theme: &super
 
                 let mut state = TableState::default();
                 state.select(Some((*selected).min(labels.len().saturating_sub(1))));
-                frame.render_stateful_widget(table, chunks[1], &mut state);
+                frame.render_stateful_widget(table, body_area, &mut state);
 
                 let hint_block = Block::default()
                     .borders(Borders::ALL)
@@ -3775,7 +3957,7 @@ fn render_overlay(frame: &mut Frame<'_>, app: &App, data: &UiData, theme: &super
             } else {
                 frame.render_widget(
                     Paragraph::new(Line::raw(texts::tui_provider_not_found())),
-                    chunks[1],
+                    body_area,
                 );
             }
         }
@@ -3918,6 +4100,7 @@ fn render_overlay(frame: &mut Frame<'_>, app: &App, data: &UiData, theme: &super
                 ],
             );
 
+            let body_area = inset_top(chunks[1], 1);
             let items = [
                 crate::app_config::AppType::Claude,
                 crate::app_config::AppType::Codex,
@@ -3945,7 +4128,70 @@ fn render_overlay(frame: &mut Frame<'_>, app: &App, data: &UiData, theme: &super
 
             let mut state = ListState::default();
             state.select(Some(*selected));
-            frame.render_stateful_widget(list, chunks[1], &mut state);
+            frame.render_stateful_widget(list, body_area, &mut state);
+        }
+        Overlay::SkillsAppsPicker {
+            name,
+            selected,
+            apps,
+            ..
+        } => {
+            let area = centered_rect_fixed(OVERLAY_FIXED_LG.0, 12, content_area);
+            frame.render_widget(Clear, area);
+
+            let outer = Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Plain)
+                .border_style(overlay_border_style(theme, false))
+                .title(texts::tui_skill_apps_title(name));
+            frame.render_widget(outer.clone(), area);
+            let inner = outer.inner(area);
+
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(1), Constraint::Min(0)])
+                .split(inner);
+
+            render_key_bar_center(
+                frame,
+                chunks[0],
+                theme,
+                &[
+                    ("x", texts::tui_key_toggle()),
+                    ("Enter", texts::tui_key_apply()),
+                    ("Esc", texts::tui_key_cancel()),
+                ],
+            );
+
+            let body_area = inset_top(chunks[1], 1);
+            let items = [
+                crate::app_config::AppType::Claude,
+                crate::app_config::AppType::Codex,
+                crate::app_config::AppType::Gemini,
+                crate::app_config::AppType::OpenCode,
+            ]
+            .into_iter()
+            .map(|app_type| {
+                let enabled = apps.is_enabled_for(&app_type);
+                let marker = if enabled {
+                    texts::tui_marker_active()
+                } else {
+                    texts::tui_marker_inactive()
+                };
+
+                ListItem::new(Line::from(Span::raw(format!(
+                    "{marker}  {}",
+                    app_type.as_str()
+                ))))
+            });
+
+            let list = List::new(items)
+                .highlight_style(selection_style(theme))
+                .highlight_symbol(highlight_symbol(theme));
+
+            let mut state = ListState::default();
+            state.select(Some(*selected));
+            frame.render_stateful_widget(list, body_area, &mut state);
         }
         Overlay::SkillsSyncMethodPicker { selected } => {
             let area = centered_rect_fixed(OVERLAY_FIXED_LG.0, 12, content_area);
@@ -3975,6 +4221,7 @@ fn render_overlay(frame: &mut Frame<'_>, app: &App, data: &UiData, theme: &super
                 ],
             );
 
+            let body_area = inset_top(chunks[1], 1);
             let current = data.skills.sync_method;
             let methods = [
                 crate::services::skill::SyncMethod::Auto,
@@ -4000,7 +4247,7 @@ fn render_overlay(frame: &mut Frame<'_>, app: &App, data: &UiData, theme: &super
 
             let mut state = ListState::default();
             state.select(Some(*selected));
-            frame.render_stateful_widget(list, chunks[1], &mut state);
+            frame.render_stateful_widget(list, body_area, &mut state);
         }
         Overlay::Loading {
             kind,
@@ -4036,45 +4283,23 @@ fn render_overlay(frame: &mut Frame<'_>, app: &App, data: &UiData, theme: &super
                 _ => texts::tui_key_close(),
             };
             render_key_bar_center(frame, chunks[0], theme, &[("Esc", esc_label)]);
+            let body_area = inset_top(chunks[1], 1);
             frame.render_widget(
                 Paragraph::new(centered_message_lines(
                     message,
-                    chunks[1].width,
-                    chunks[1].height,
+                    body_area.width,
+                    body_area.height,
                 ))
                 .alignment(Alignment::Center)
                 .wrap(Wrap { trim: false }),
-                chunks[1],
+                body_area,
             );
         }
         Overlay::SpeedtestRunning { url } => {
-            let area = centered_rect_fixed(OVERLAY_FIXED_MD.0, OVERLAY_FIXED_MD.1, content_area);
+            let title = texts::tui_speedtest_title();
+            let message = texts::tui_speedtest_running(url);
+            let area = compact_message_overlay_rect(content_area, title, &message);
             frame.render_widget(Clear, area);
-            let outer = Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Plain)
-                .border_style(overlay_border_style(theme, false))
-                .title(texts::tui_speedtest_title());
-            frame.render_widget(outer.clone(), area);
-            let inner = outer.inner(area);
-
-            let chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Length(1), Constraint::Min(0)])
-                .split(inner);
-
-            render_key_bar_center(frame, chunks[0], theme, &[("Esc", texts::tui_key_close())]);
-            frame.render_widget(
-                Paragraph::new(Line::raw(texts::tui_speedtest_running(url)))
-                    .wrap(Wrap { trim: false }),
-                chunks[1],
-            );
-        }
-        Overlay::SpeedtestResult { url, lines, scroll } => {
-            let area = centered_rect(OVERLAY_LG.0, OVERLAY_LG.1, content_area);
-            frame.render_widget(Clear, area);
-
-            let title = texts::tui_speedtest_title_with_url(url);
             let outer = Block::default()
                 .borders(Borders::ALL)
                 .border_type(BorderType::Plain)
@@ -4088,34 +4313,100 @@ fn render_overlay(frame: &mut Frame<'_>, app: &App, data: &UiData, theme: &super
                 .constraints([Constraint::Length(1), Constraint::Min(0)])
                 .split(inner);
 
-            render_key_bar_center(
-                frame,
-                chunks[0],
-                theme,
-                &[
-                    ("↑↓", texts::tui_key_scroll()),
-                    ("Esc", texts::tui_key_close()),
-                ],
+            render_key_bar_center(frame, chunks[0], theme, &[("Esc", texts::tui_key_close())]);
+            let body_area = inset_top(chunks[1], 1);
+            frame.render_widget(
+                Paragraph::new(centered_message_lines(
+                    &message,
+                    body_area.width,
+                    body_area.height,
+                ))
+                .alignment(Alignment::Center)
+                .wrap(Wrap { trim: false }),
+                body_area,
             );
+        }
+        Overlay::SpeedtestResult { url, lines, scroll } => {
+            let full_title = texts::tui_speedtest_title_with_url(url);
+            let compact_title = texts::tui_speedtest_title();
+            if should_use_compact_lines_overlay(content_area, compact_title, lines) {
+                let area = compact_lines_overlay_rect(content_area, compact_title, lines);
+                frame.render_widget(Clear, area);
 
-            let height = chunks[1].height as usize;
-            let start = (*scroll).min(lines.len());
-            let end = (start + height).min(lines.len());
-            let shown = lines[start..end]
-                .iter()
-                .map(|s| Line::raw(s.clone()))
-                .collect::<Vec<_>>();
+                let outer = Block::default()
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Plain)
+                    .border_style(overlay_border_style(theme, false))
+                    .title(compact_title);
+                frame.render_widget(outer.clone(), area);
+                let inner = outer.inner(area);
 
-            frame.render_widget(Paragraph::new(shown).wrap(Wrap { trim: false }), chunks[1]);
+                let chunks = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([Constraint::Length(1), Constraint::Min(0)])
+                    .split(inner);
+
+                render_key_bar_center(frame, chunks[0], theme, &[("Esc", texts::tui_key_close())]);
+                let body_area = inset_top(chunks[1], 1);
+                frame.render_widget(
+                    Paragraph::new(centered_text_lines(
+                        lines,
+                        body_area.width,
+                        body_area.height,
+                    ))
+                    .alignment(Alignment::Center)
+                    .wrap(Wrap { trim: false }),
+                    body_area,
+                );
+            } else {
+                let area = centered_rect(OVERLAY_LG.0, OVERLAY_LG.1, content_area);
+                frame.render_widget(Clear, area);
+
+                let outer = Block::default()
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Plain)
+                    .border_style(overlay_border_style(theme, false))
+                    .title(full_title);
+                frame.render_widget(outer.clone(), area);
+                let inner = outer.inner(area);
+
+                let chunks = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([Constraint::Length(1), Constraint::Min(0)])
+                    .split(inner);
+
+                render_key_bar_center(
+                    frame,
+                    chunks[0],
+                    theme,
+                    &[
+                        ("↑↓", texts::tui_key_scroll()),
+                        ("Esc", texts::tui_key_close()),
+                    ],
+                );
+
+                let body_area = inset_top(chunks[1], 1);
+                let height = body_area.height as usize;
+                let start = (*scroll).min(lines.len());
+                let end = (start + height).min(lines.len());
+                let shown = lines[start..end]
+                    .iter()
+                    .map(|s| Line::raw(s.clone()))
+                    .collect::<Vec<_>>();
+
+                frame.render_widget(Paragraph::new(shown).wrap(Wrap { trim: false }), body_area);
+            }
         }
         Overlay::StreamCheckRunning { provider_name, .. } => {
-            let area = centered_rect_fixed(OVERLAY_FIXED_MD.0, OVERLAY_FIXED_MD.1, content_area);
+            let title = texts::tui_stream_check_title();
+            let message = texts::tui_stream_check_running(provider_name);
+            let area = compact_message_overlay_rect(content_area, title, &message);
             frame.render_widget(Clear, area);
             let outer = Block::default()
                 .borders(Borders::ALL)
                 .border_type(BorderType::Plain)
                 .border_style(overlay_border_style(theme, false))
-                .title(texts::tui_stream_check_title());
+                .title(title);
             frame.render_widget(outer.clone(), area);
             let inner = outer.inner(area);
 
@@ -4125,10 +4416,16 @@ fn render_overlay(frame: &mut Frame<'_>, app: &App, data: &UiData, theme: &super
                 .split(inner);
 
             render_key_bar_center(frame, chunks[0], theme, &[("Esc", texts::tui_key_close())]);
+            let body_area = inset_top(chunks[1], 1);
             frame.render_widget(
-                Paragraph::new(Line::raw(texts::tui_stream_check_running(provider_name)))
-                    .wrap(Wrap { trim: false }),
-                chunks[1],
+                Paragraph::new(centered_message_lines(
+                    &message,
+                    body_area.width,
+                    body_area.height,
+                ))
+                .alignment(Alignment::Center)
+                .wrap(Wrap { trim: false }),
+                body_area,
             );
         }
         Overlay::StreamCheckResult {
@@ -4136,42 +4433,75 @@ fn render_overlay(frame: &mut Frame<'_>, app: &App, data: &UiData, theme: &super
             lines,
             scroll,
         } => {
-            let area = centered_rect(OVERLAY_LG.0, OVERLAY_LG.1, content_area);
-            frame.render_widget(Clear, area);
+            let full_title = texts::tui_stream_check_title_with_provider(provider_name);
+            let compact_title = texts::tui_stream_check_title();
+            if should_use_compact_lines_overlay(content_area, compact_title, lines) {
+                let area = compact_lines_overlay_rect(content_area, compact_title, lines);
+                frame.render_widget(Clear, area);
 
-            let title = texts::tui_stream_check_title_with_provider(provider_name);
-            let outer = Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Plain)
-                .border_style(overlay_border_style(theme, false))
-                .title(title);
-            frame.render_widget(outer.clone(), area);
-            let inner = outer.inner(area);
+                let outer = Block::default()
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Plain)
+                    .border_style(overlay_border_style(theme, false))
+                    .title(compact_title);
+                frame.render_widget(outer.clone(), area);
+                let inner = outer.inner(area);
 
-            let chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Length(1), Constraint::Min(0)])
-                .split(inner);
+                let chunks = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([Constraint::Length(1), Constraint::Min(0)])
+                    .split(inner);
 
-            render_key_bar_center(
-                frame,
-                chunks[0],
-                theme,
-                &[
-                    ("↑↓", texts::tui_key_scroll()),
-                    ("Esc", texts::tui_key_close()),
-                ],
-            );
+                render_key_bar_center(frame, chunks[0], theme, &[("Esc", texts::tui_key_close())]);
+                let body_area = inset_top(chunks[1], 1);
+                frame.render_widget(
+                    Paragraph::new(centered_text_lines(
+                        lines,
+                        body_area.width,
+                        body_area.height,
+                    ))
+                    .alignment(Alignment::Center)
+                    .wrap(Wrap { trim: false }),
+                    body_area,
+                );
+            } else {
+                let area = centered_rect(OVERLAY_LG.0, OVERLAY_LG.1, content_area);
+                frame.render_widget(Clear, area);
 
-            let height = chunks[1].height as usize;
-            let start = (*scroll).min(lines.len());
-            let end = (start + height).min(lines.len());
-            let shown = lines[start..end]
-                .iter()
-                .map(|s| Line::raw(s.clone()))
-                .collect::<Vec<_>>();
+                let outer = Block::default()
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Plain)
+                    .border_style(overlay_border_style(theme, false))
+                    .title(full_title);
+                frame.render_widget(outer.clone(), area);
+                let inner = outer.inner(area);
 
-            frame.render_widget(Paragraph::new(shown).wrap(Wrap { trim: false }), chunks[1]);
+                let chunks = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([Constraint::Length(1), Constraint::Min(0)])
+                    .split(inner);
+
+                render_key_bar_center(
+                    frame,
+                    chunks[0],
+                    theme,
+                    &[
+                        ("↑↓", texts::tui_key_scroll()),
+                        ("Esc", texts::tui_key_close()),
+                    ],
+                );
+
+                let body_area = inset_top(chunks[1], 1);
+                let height = body_area.height as usize;
+                let start = (*scroll).min(lines.len());
+                let end = (start + height).min(lines.len());
+                let shown = lines[start..end]
+                    .iter()
+                    .map(|s| Line::raw(s.clone()))
+                    .collect::<Vec<_>>();
+
+                frame.render_widget(Paragraph::new(shown).wrap(Wrap { trim: false }), body_area);
+            }
         }
         Overlay::UpdateAvailable {
             current,
@@ -4220,7 +4550,7 @@ fn render_overlay(frame: &mut Frame<'_>, app: &App, data: &UiData, theme: &super
             let cancel_label = format!("[ {} ]", texts::tui_update_btn_cancel());
             let update_style = if *selected == 0 {
                 Style::default()
-                    .fg(theme.ok)
+                    .fg(theme.accent)
                     .add_modifier(Modifier::BOLD | Modifier::REVERSED)
             } else {
                 Style::default().fg(theme.dim)
@@ -4261,6 +4591,7 @@ fn render_overlay(frame: &mut Frame<'_>, app: &App, data: &UiData, theme: &super
                 .split(inner);
 
             render_key_bar_center(frame, chunks[0], theme, &[("Esc", texts::tui_key_hide())]);
+            let body_area = inset_top(chunks[1], 1);
 
             let progress_text = if let Some(t) = total {
                 if *t > 0 {
@@ -4289,7 +4620,7 @@ fn render_overlay(frame: &mut Frame<'_>, app: &App, data: &UiData, theme: &super
                     .gauge_style(Style::default().fg(theme.accent))
                     .ratio(gauge_ratio)
                     .label(progress_text),
-                chunks[1],
+                body_area,
             );
         }
         Overlay::UpdateResult { success, message } => {
@@ -4322,15 +4653,16 @@ fn render_overlay(frame: &mut Frame<'_>, app: &App, data: &UiData, theme: &super
                 ]
             };
             render_key_bar_center(frame, chunks[0], theme, &keys);
+            let body_area = inset_top(chunks[1], 1);
 
             frame.render_widget(
                 Paragraph::new(centered_message_lines(
                     message,
-                    chunks[1].width,
-                    chunks[1].height,
+                    body_area.width,
+                    body_area.height,
                 ))
                 .alignment(Alignment::Center),
-                chunks[1],
+                body_area,
             );
         }
     }
@@ -4451,6 +4783,7 @@ mod tests {
     use ratatui::{backend::TestBackend, buffer::Buffer, Terminal};
     use serde_json::json;
     use std::sync::Mutex;
+    use unicode_width::UnicodeWidthStr;
 
     use crate::{
         app_config::AppType,
@@ -4752,6 +5085,46 @@ mod tests {
     }
 
     #[test]
+    fn update_available_primary_button_uses_accent_not_success_green() {
+        let _lock = lock_env();
+        let _no_color = EnvGuard::remove("NO_COLOR");
+
+        let mut app = App::new(Some(AppType::OpenCode));
+        app.route = Route::Providers;
+        app.focus = Focus::Content;
+        app.overlay = Overlay::UpdateAvailable {
+            current: "1.0.0".to_string(),
+            latest: "1.1.0".to_string(),
+            selected: 0,
+        };
+        let data = minimal_data(&app.app_type);
+
+        let buf = render(&app, &data);
+        let theme = theme_for(&app.app_type);
+        let update_label = format!("[ {} ]", texts::tui_update_btn_update());
+        let row_index = (0..buf.area.height)
+            .find(|&y| line_at(&buf, y).contains(&update_label))
+            .expect("update button should be rendered");
+        let row = line_at(&buf, row_index);
+        let x = row
+            .find(&update_label)
+            .map(|idx| UnicodeWidthStr::width(&row[..idx]) as u16 + 2)
+            .expect("update button should be locatable");
+        let cell = &buf[(x, row_index)];
+
+        assert_ne!(
+            theme.accent, theme.ok,
+            "test app accent must differ from success green"
+        );
+        assert!(
+            cell.fg == theme.accent || cell.bg == theme.accent,
+            "primary action should use accent, got fg={:?}, bg={:?}",
+            cell.fg,
+            cell.bg
+        );
+    }
+
+    #[test]
     fn editor_cursor_matches_rendered_target_line() {
         let _lock = lock_env();
         let _no_color = EnvGuard::remove("NO_COLOR");
@@ -5006,8 +5379,47 @@ mod tests {
         let all = all_text(&buf);
 
         assert!(all.contains(&texts::tui_skills_installed_counts(1, 0, 0, 0)));
-        assert!(all.contains("hello-skill"));
+        assert!(!all.contains(texts::tui_header_directory()));
+        assert!(!all.contains("hello-skill"));
         assert!(all.contains("Hello Skill"));
+    }
+
+    #[test]
+    fn skills_page_prefers_full_name_over_directory() {
+        let _lock = lock_env();
+        let _no_color = EnvGuard::remove("NO_COLOR");
+
+        let mut app = App::new(Some(AppType::Claude));
+        app.route = Route::Skills;
+        app.focus = Focus::Content;
+
+        let mut data = minimal_data(&app.app_type);
+        data.skills.installed = vec![installed_skill("cxgo", "CXGO - C/C++ to Go")];
+
+        let buf = render(&app, &data);
+        let all = all_text(&buf);
+
+        assert!(all.contains("CXGO - C/C++ to Go"));
+        assert!(!all.contains("cxgo"));
+    }
+
+    #[test]
+    fn skills_page_key_bar_shows_apps_and_uninstall_actions() {
+        let _lock = lock_env();
+        let _no_color = EnvGuard::remove("NO_COLOR");
+
+        let mut app = App::new(Some(AppType::Claude));
+        app.route = Route::Skills;
+        app.focus = Focus::Content;
+
+        let mut data = minimal_data(&app.app_type);
+        data.skills.installed = vec![installed_skill("hello-skill", "Hello Skill")];
+
+        let buf = render(&app, &data);
+        let all = all_text(&buf);
+
+        assert!(all.contains(texts::tui_key_apps()));
+        assert!(all.contains(texts::tui_key_uninstall()));
     }
 
     #[test]
@@ -5095,6 +5507,79 @@ mod tests {
         let all = all_text(&buf);
 
         assert!(all.contains("opencode"));
+    }
+
+    #[test]
+    fn mcp_page_key_bar_hides_validate_action() {
+        let _lock = lock_env();
+        let _no_color = EnvGuard::remove("NO_COLOR");
+
+        let mut app = App::new(Some(AppType::Claude));
+        app.route = Route::Mcp;
+        app.focus = Focus::Content;
+
+        let data = minimal_data(&app.app_type);
+        let buf = render(&app, &data);
+        let all = all_text(&buf);
+
+        assert!(!all.contains("validate"));
+        assert!(!all.contains("校验"));
+    }
+
+    #[test]
+    fn mcp_page_shows_summary_bar() {
+        let _lock = lock_env();
+        let _no_color = EnvGuard::remove("NO_COLOR");
+
+        let mut app = App::new(Some(AppType::OpenCode));
+        app.route = Route::Mcp;
+        app.focus = Focus::Content;
+
+        let mut data = minimal_data(&app.app_type);
+        data.mcp.rows = vec![
+            super::super::data::McpRow {
+                id: "m1".to_string(),
+                server: crate::app_config::McpServer {
+                    id: "m1".to_string(),
+                    name: "Server 1".to_string(),
+                    server: json!({}),
+                    apps: crate::app_config::McpApps {
+                        claude: true,
+                        codex: false,
+                        gemini: false,
+                        opencode: true,
+                    },
+                    description: None,
+                    homepage: None,
+                    docs: None,
+                    tags: vec![],
+                },
+            },
+            super::super::data::McpRow {
+                id: "m2".to_string(),
+                server: crate::app_config::McpServer {
+                    id: "m2".to_string(),
+                    name: "Server 2".to_string(),
+                    server: json!({}),
+                    apps: crate::app_config::McpApps {
+                        claude: false,
+                        codex: true,
+                        gemini: false,
+                        opencode: false,
+                    },
+                    description: None,
+                    homepage: None,
+                    docs: None,
+                    tags: vec![],
+                },
+            },
+        ];
+
+        let buf = render(&app, &data);
+        let all = all_text(&buf);
+
+        assert!(all.contains("Installed"));
+        assert!(all.contains("Claude: 1"));
     }
 
     #[test]
@@ -5275,6 +5760,346 @@ mod tests {
         assert!(
             !footer.contains("clear") && !footer.contains("apply"),
             "expected footer to not show overlay/page actions; got: {footer:?}"
+        );
+    }
+
+    #[test]
+    fn toast_renders_as_centered_overlay() {
+        let _lock = lock_env();
+        let _no_color = EnvGuard::remove("NO_COLOR");
+
+        let mut app = App::new(Some(AppType::Claude));
+        app.route = Route::Providers;
+        app.focus = Focus::Content;
+        app.push_toast("Toast message", crate::cli::tui::app::ToastKind::Success);
+        let data = minimal_data(&app.app_type);
+
+        let buf = render(&app, &data);
+        let footer = line_at(&buf, buf.area.height - 1);
+        assert!(
+            !footer.contains("Toast message"),
+            "toast should not be rendered in footer: {footer:?}"
+        );
+
+        let toast_row = (0..buf.area.height)
+            .find(|&y| line_at(&buf, y).contains("Toast message"))
+            .expect("toast message should be rendered");
+        let theme = theme_for(&app.app_type);
+        let content = super::content_pane_rect(buf.area, &theme);
+        let content_mid = content.y + content.height / 2;
+        assert!(
+            toast_row.abs_diff(content_mid) <= 2,
+            "toast should render near the content center, got row {toast_row}, content mid {content_mid}"
+        );
+
+        let row = line_at(&buf, toast_row);
+        let msg_start = row
+            .find("Toast message")
+            .expect("toast row should contain message");
+        let left_border = row[..msg_start]
+            .rfind('│')
+            .expect("toast row should have a left border");
+        let right_border = row[msg_start + "Toast message".len()..]
+            .find('│')
+            .expect("toast row should have a right border");
+
+        assert!(
+            msg_start.saturating_sub(left_border) > 2,
+            "toast message should not hug the left border: {row:?}"
+        );
+        assert!(
+            right_border > 2,
+            "toast message should not hug the right border: {row:?}"
+        );
+    }
+
+    #[test]
+    fn info_toast_uses_app_accent_border_color() {
+        let _lock = lock_env();
+        let _no_color = EnvGuard::remove("NO_COLOR");
+
+        let mut app = App::new(Some(AppType::OpenCode));
+        app.route = Route::Mcp;
+        app.focus = Focus::Content;
+        app.push_toast(
+            texts::tui_toast_mcp_imported(0),
+            crate::cli::tui::app::ToastKind::Info,
+        );
+        let data = minimal_data(&app.app_type);
+
+        let buf = render(&app, &data);
+        let theme = theme_for(&app.app_type);
+        assert_ne!(
+            theme.accent, theme.ok,
+            "OpenCode accent should differ from success green"
+        );
+
+        let message = format!(
+            "{} {}",
+            texts::tui_toast_prefix_info().trim(),
+            texts::tui_toast_mcp_imported(0)
+        );
+        let content = super::content_pane_rect(buf.area, &theme);
+        let area = super::toast_rect(content, &message);
+        let border_cell = &buf[(area.x, area.y + area.height / 2)];
+
+        assert_eq!(border_cell.symbol(), "│");
+        assert_eq!(border_cell.fg, theme.accent);
+    }
+
+    #[test]
+    fn speedtest_running_overlay_is_compact_and_centered() {
+        let _lock = lock_env();
+        let _no_color = EnvGuard::remove("NO_COLOR");
+
+        let mut app = App::new(Some(AppType::Claude));
+        app.route = Route::Providers;
+        app.focus = Focus::Content;
+        app.overlay = Overlay::SpeedtestRunning {
+            url: "https://x.y".to_string(),
+        };
+        let data = minimal_data(&app.app_type);
+
+        let buf = render(&app, &data);
+        let message = texts::tui_speedtest_running("https://x.y");
+        let row_index = (0..buf.area.height)
+            .find(|&y| line_at(&buf, y).contains(&message))
+            .expect("speedtest running message should be rendered");
+        let row = line_at(&buf, row_index);
+        let msg_start = row.find(&message).expect("message should be present");
+        let left_border = row[..msg_start]
+            .rfind('│')
+            .expect("message row should have left border");
+        let right_border_offset = row[msg_start + message.len()..]
+            .find('│')
+            .expect("message row should have right border");
+        let right_border = msg_start + message.len() + right_border_offset;
+        let overlay_width = right_border.saturating_sub(left_border).saturating_add(1);
+
+        assert!(
+            msg_start.saturating_sub(left_border) > 2,
+            "message should not hug left border: {row:?}"
+        );
+        assert!(
+            right_border.saturating_sub(msg_start + message.len()) > 2,
+            "message should not hug right border: {row:?}"
+        );
+        assert!(
+            overlay_width < super::OVERLAY_FIXED_MD.0 as usize,
+            "short running overlay should be compact, got width {overlay_width}"
+        );
+    }
+
+    #[test]
+    fn stream_check_running_overlay_is_compact_and_centered() {
+        let _lock = lock_env();
+        let _no_color = EnvGuard::remove("NO_COLOR");
+
+        let mut app = App::new(Some(AppType::Claude));
+        app.route = Route::ProviderDetail {
+            id: "p1".to_string(),
+        };
+        app.focus = Focus::Content;
+        app.overlay = Overlay::StreamCheckRunning {
+            provider_id: "p1".to_string(),
+            provider_name: "Demo".to_string(),
+        };
+        let data = minimal_data(&app.app_type);
+
+        let buf = render(&app, &data);
+        let message = texts::tui_stream_check_running("Demo");
+        let row_index = (0..buf.area.height)
+            .find(|&y| line_at(&buf, y).contains(&message))
+            .expect("stream check running message should be rendered");
+        let row = line_at(&buf, row_index);
+        let msg_start = row.find(&message).expect("message should be present");
+        let left_border = row[..msg_start]
+            .rfind('│')
+            .expect("message row should have left border");
+        let right_border_offset = row[msg_start + message.len()..]
+            .find('│')
+            .expect("message row should have right border");
+        let right_border = msg_start + message.len() + right_border_offset;
+        let overlay_width = right_border.saturating_sub(left_border).saturating_add(1);
+
+        assert!(
+            msg_start.saturating_sub(left_border) > 2,
+            "message should not hug left border: {row:?}"
+        );
+        assert!(
+            right_border.saturating_sub(msg_start + message.len()) > 2,
+            "message should not hug right border: {row:?}"
+        );
+        assert!(
+            overlay_width < super::OVERLAY_FIXED_MD.0 as usize,
+            "short running overlay should be compact, got width {overlay_width}"
+        );
+    }
+
+    #[test]
+    fn speedtest_result_overlay_is_compact_when_lines_are_short() {
+        let _lock = lock_env();
+        let _no_color = EnvGuard::remove("NO_COLOR");
+
+        let mut app = App::new(Some(AppType::Claude));
+        app.route = Route::Providers;
+        app.focus = Focus::Content;
+        app.overlay = Overlay::SpeedtestResult {
+            url: "https://ww.packyapi.com".to_string(),
+            lines: vec![
+                texts::tui_speedtest_line_url("https://ww.packyapi.com"),
+                String::new(),
+                texts::tui_speedtest_line_latency("367 ms"),
+                texts::tui_speedtest_line_status("200"),
+            ],
+            scroll: 0,
+        };
+        let data = minimal_data(&app.app_type);
+
+        let buf = render(&app, &data);
+        let row_index = (0..buf.area.height)
+            .find(|&y| line_at(&buf, y).contains("https://ww.packyapi.com"))
+            .expect("speedtest result URL should be rendered");
+        let row = line_at(&buf, row_index);
+        let msg_start = row
+            .find("https://ww.packyapi.com")
+            .expect("message should be present");
+        let left_border = row[..msg_start]
+            .rfind('│')
+            .expect("message row should have left border");
+        let right_border_offset = row[msg_start + "https://ww.packyapi.com".len()..]
+            .find('│')
+            .expect("message row should have right border");
+        let right_border = msg_start + "https://ww.packyapi.com".len() + right_border_offset;
+        let overlay_width = right_border.saturating_sub(left_border).saturating_add(1);
+
+        assert!(
+            msg_start.saturating_sub(left_border) > 2,
+            "result should not hug left border: {row:?}"
+        );
+        assert!(
+            right_border.saturating_sub(msg_start + "https://ww.packyapi.com".len()) > 2,
+            "result should not hug right border: {row:?}"
+        );
+        assert!(
+            overlay_width < 70,
+            "short result overlay should be compact, got width {overlay_width}"
+        );
+    }
+
+    #[test]
+    fn stream_check_result_overlay_is_compact_when_lines_are_short() {
+        let _lock = lock_env();
+        let _no_color = EnvGuard::remove("NO_COLOR");
+
+        let mut app = App::new(Some(AppType::Claude));
+        app.route = Route::ProviderDetail {
+            id: "p1".to_string(),
+        };
+        app.focus = Focus::Content;
+        app.overlay = Overlay::StreamCheckResult {
+            provider_name: "Packy".to_string(),
+            lines: vec![
+                texts::tui_stream_check_line_provider("Packy"),
+                texts::tui_stream_check_line_status("OK"),
+                texts::tui_stream_check_line_response_time("367 ms"),
+                texts::tui_stream_check_line_http_status("200"),
+            ],
+            scroll: 0,
+        };
+        let data = minimal_data(&app.app_type);
+
+        let buf = render(&app, &data);
+        let row_index = (0..buf.area.height)
+            .find(|&y| line_at(&buf, y).contains("367 ms"))
+            .expect("stream check result should be rendered");
+        let row = line_at(&buf, row_index);
+        let msg_start = row.find("367 ms").expect("message should be present");
+        let left_border = row[..msg_start]
+            .rfind('│')
+            .expect("message row should have left border");
+        let right_border_offset = row[msg_start + "367 ms".len()..]
+            .find('│')
+            .expect("message row should have right border");
+        let right_border = msg_start + "367 ms".len() + right_border_offset;
+        let overlay_width = right_border.saturating_sub(left_border).saturating_add(1);
+
+        assert!(
+            msg_start.saturating_sub(left_border) > 2,
+            "result should not hug left border: {row:?}"
+        );
+        assert!(
+            right_border.saturating_sub(msg_start + "367 ms".len()) > 2,
+            "result should not hug right border: {row:?}"
+        );
+        assert!(
+            overlay_width < 70,
+            "short result overlay should be compact, got width {overlay_width}"
+        );
+    }
+
+    #[test]
+    fn speedtest_result_overlay_leaves_gap_below_keybar() {
+        let _lock = lock_env();
+        let _no_color = EnvGuard::remove("NO_COLOR");
+
+        let mut app = App::new(Some(AppType::Claude));
+        app.route = Route::Providers;
+        app.focus = Focus::Content;
+        app.overlay = Overlay::SpeedtestResult {
+            url: "https://ww.packyapi.com".to_string(),
+            lines: vec![
+                texts::tui_speedtest_line_url("https://ww.packyapi.com"),
+                String::new(),
+                texts::tui_speedtest_line_latency("367 ms"),
+                texts::tui_speedtest_line_status("200"),
+            ],
+            scroll: 0,
+        };
+        let data = minimal_data(&app.app_type);
+
+        let buf = render(&app, &data);
+        let key_row = (0..buf.area.height)
+            .find(|&y| line_at(&buf, y).contains("Esc"))
+            .expect("key row should be rendered");
+        let content_row = (0..buf.area.height)
+            .find(|&y| line_at(&buf, y).contains("https://ww.packyapi.com"))
+            .expect("content row should be rendered");
+
+        assert!(
+            content_row > key_row + 1,
+            "content should leave a blank row below key hints: key_row={key_row}, content_row={content_row}"
+        );
+    }
+
+    #[test]
+    fn stream_check_running_overlay_leaves_gap_below_keybar() {
+        let _lock = lock_env();
+        let _no_color = EnvGuard::remove("NO_COLOR");
+
+        let mut app = App::new(Some(AppType::Claude));
+        app.route = Route::ProviderDetail {
+            id: "p1".to_string(),
+        };
+        app.focus = Focus::Content;
+        app.overlay = Overlay::StreamCheckRunning {
+            provider_id: "p1".to_string(),
+            provider_name: "Demo".to_string(),
+        };
+        let data = minimal_data(&app.app_type);
+
+        let buf = render(&app, &data);
+        let message = texts::tui_stream_check_running("Demo");
+        let key_row = (0..buf.area.height)
+            .find(|&y| line_at(&buf, y).contains("Esc"))
+            .expect("key row should be rendered");
+        let content_row = (0..buf.area.height)
+            .find(|&y| line_at(&buf, y).contains(&message))
+            .expect("content row should be rendered");
+
+        assert!(
+            content_row > key_row + 1,
+            "content should leave a blank row below key hints: key_row={key_row}, content_row={content_row}"
         );
     }
 

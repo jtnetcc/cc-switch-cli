@@ -38,10 +38,6 @@ use data::{load_state, UiData};
 use form::{FormState, ProviderAddField};
 use terminal::{PanicRestoreHookGuard, TuiTerminal};
 
-fn command_lookup_name(raw: &str) -> Option<&str> {
-    raw.split_whitespace().next()
-}
-
 fn next_model_fetch_request_id() -> u64 {
     static NEXT_MODEL_FETCH_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
     NEXT_MODEL_FETCH_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
@@ -1033,6 +1029,57 @@ fn handle_webdav_msg(
     Ok(())
 }
 
+fn scan_unmanaged_skills_with<F>(app: &mut App, scan: F) -> Result<(), AppError>
+where
+    F: FnOnce() -> Result<Vec<crate::services::skill::UnmanagedSkill>, AppError>,
+{
+    app.skills_unmanaged_results = scan()?;
+    app.skills_unmanaged_selected.clear();
+    app.skills_unmanaged_idx = 0;
+    app.push_toast(
+        texts::tui_toast_unmanaged_scanned(app.skills_unmanaged_results.len()),
+        ToastKind::Info,
+    );
+    Ok(())
+}
+
+fn scan_unmanaged_skills(app: &mut App) -> Result<(), AppError> {
+    scan_unmanaged_skills_with(app, SkillService::scan_unmanaged)
+}
+
+fn import_mcp_for_current_app_with<FImport, FLoad>(
+    app: &mut App,
+    data: &mut UiData,
+    import: FImport,
+    load_data: FLoad,
+) -> Result<(), AppError>
+where
+    FImport: FnOnce(&AppType) -> Result<usize, AppError>,
+    FLoad: FnOnce(&AppType) -> Result<UiData, AppError>,
+{
+    let count = import(&app.app_type)?;
+    app.push_toast(texts::tui_toast_mcp_imported(count), ToastKind::Info);
+    *data = load_data(&app.app_type)?;
+    Ok(())
+}
+
+fn import_mcp_for_current_app(app: &mut App, data: &mut UiData) -> Result<(), AppError> {
+    import_mcp_for_current_app_with(
+        app,
+        data,
+        |app_type| {
+            let state = load_state()?;
+            match app_type {
+                AppType::Claude => McpService::import_from_claude(&state),
+                AppType::Codex => McpService::import_from_codex(&state),
+                AppType::Gemini => McpService::import_from_gemini(&state),
+                AppType::OpenCode => McpService::import_from_opencode(&state),
+            }
+        },
+        UiData::load,
+    )
+}
+
 fn handle_action(
     terminal: &mut TuiTerminal,
     app: &mut App,
@@ -1100,6 +1147,34 @@ fn handle_action(
                 texts::tui_toast_skill_toggled(&directory, enabled),
                 ToastKind::Success,
             );
+            Ok(())
+        }
+        Action::SkillsSetApps { directory, apps } => {
+            let Some(before) = data
+                .skills
+                .installed
+                .iter()
+                .find(|skill| skill.directory == directory)
+                .map(|skill| skill.apps.clone())
+            else {
+                app.push_toast(texts::tui_skill_not_found(), ToastKind::Warning);
+                return Ok(());
+            };
+
+            let mut changed = false;
+            for app_type in AppType::all() {
+                let next_enabled = apps.is_enabled_for(&app_type);
+                if before.is_enabled_for(&app_type) == next_enabled {
+                    continue;
+                }
+                changed = true;
+                SkillService::toggle_app(&directory, &app_type, next_enabled)?;
+            }
+
+            *data = UiData::load(&app.app_type)?;
+            if changed {
+                app.push_toast(texts::tui_toast_skill_apps_updated(), ToastKind::Success);
+            }
             Ok(())
         }
         Action::SkillsInstall { spec } => {
@@ -1199,13 +1274,7 @@ fn handle_action(
             Ok(())
         }
         Action::SkillsScanUnmanaged => {
-            app.skills_unmanaged_results = SkillService::scan_unmanaged()?;
-            app.skills_unmanaged_selected.clear();
-            app.skills_unmanaged_idx = 0;
-            app.push_toast(
-                texts::tui_toast_unmanaged_scanned(app.skills_unmanaged_results.len()),
-                ToastKind::Success,
-            );
+            scan_unmanaged_skills(app)?;
             Ok(())
         }
         Action::SkillsImportFromApps { directories } => {
@@ -1866,34 +1935,7 @@ fn handle_action(
             Ok(())
         }
         Action::McpImport => {
-            let state = load_state()?;
-            let count = match app.app_type {
-                AppType::Claude => McpService::import_from_claude(&state)?,
-                AppType::Codex => McpService::import_from_codex(&state)?,
-                AppType::Gemini => McpService::import_from_gemini(&state)?,
-                AppType::OpenCode => McpService::import_from_opencode(&state)?,
-            };
-            app.push_toast(texts::tui_toast_mcp_imported(count), ToastKind::Success);
-            *data = UiData::load(&app.app_type)?;
-            Ok(())
-        }
-        Action::McpValidate { command } => {
-            let Some(bin) = command_lookup_name(&command) else {
-                app.push_toast(texts::tui_toast_command_empty(), ToastKind::Warning);
-                return Ok(());
-            };
-
-            if which::which(bin).is_ok() {
-                app.push_toast(
-                    texts::tui_toast_command_available_in_path(bin),
-                    ToastKind::Success,
-                );
-            } else {
-                app.push_toast(
-                    texts::tui_toast_command_not_found_in_path(bin),
-                    ToastKind::Warning,
-                );
-            }
+            import_mcp_for_current_app(app, data)?;
             Ok(())
         }
 
@@ -3007,10 +3049,41 @@ mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
     use serde_json::json;
 
-    use super::app::{App, LoadingKind, Overlay};
+    use super::app::{App, LoadingKind, Overlay, ToastKind};
     use crate::cli::i18n::texts;
+    use crate::cli::tui::data::UiData;
     use crate::cli::tui::form::ProviderAddField;
-    use crate::AppError;
+    use crate::{AppError, AppType};
+
+    #[test]
+    fn mcp_import_uses_info_toast_kind() {
+        let mut app = App::new(Some(AppType::OpenCode));
+        let mut data = UiData::default();
+
+        super::import_mcp_for_current_app_with(
+            &mut app,
+            &mut data,
+            |_app_type| Ok(0),
+            |_app_type| Ok(UiData::default()),
+        )
+        .expect("mcp import should work");
+
+        let toast = app.toast.as_ref().expect("mcp import should show toast");
+        assert_eq!(toast.kind, ToastKind::Info);
+        assert_eq!(toast.message, texts::tui_toast_mcp_imported(0));
+    }
+
+    #[test]
+    fn skills_scan_unmanaged_uses_info_toast_kind() {
+        let mut app = App::new(Some(AppType::OpenCode));
+
+        super::scan_unmanaged_skills_with(&mut app, || Ok(Vec::new()))
+            .expect("skills scan should work");
+
+        let toast = app.toast.as_ref().expect("skills scan should show toast");
+        assert_eq!(toast.kind, ToastKind::Info);
+        assert_eq!(toast.message, texts::tui_toast_unmanaged_scanned(0));
+    }
 
     #[test]
     fn normalize_ctrl_h_becomes_backspace() {
@@ -3039,18 +3112,6 @@ mod tests {
             KeyEvent::new_with_kind(KeyCode::Backspace, KeyModifiers::NONE, KeyEventKind::Press);
         let normalized = super::normalize_key_event(key);
         assert_eq!(normalized.code, KeyCode::Backspace);
-    }
-
-    #[test]
-    fn command_lookup_name_extracts_first_token() {
-        assert_eq!(super::command_lookup_name("node --version"), Some("node"));
-        assert_eq!(super::command_lookup_name("  rg   -n foo "), Some("rg"));
-    }
-
-    #[test]
-    fn command_lookup_name_rejects_empty_or_whitespace() {
-        assert_eq!(super::command_lookup_name(""), None);
-        assert_eq!(super::command_lookup_name("   "), None);
     }
 
     #[test]

@@ -494,9 +494,9 @@ pub mod texts {
 
     pub fn tui_footer_action_keys_mcp() -> &'static str {
         if is_chinese() {
-            "[ ] 切换应用  x 启用/禁用  m 应用  a 添加  e 编辑  i 导入  v 校验命令  d 删除  / 过滤  Esc 返回  ? 帮助"
+            "[ ] 切换应用  x 启用/禁用  m 应用  a 添加  e 编辑  i 导入  d 删除  / 过滤  Esc 返回  ? 帮助"
         } else {
-            "[ ] switch app  x toggle  m apps  a add  e edit  i import  v validate  d delete  / filter  Esc back  ? help"
+            "[ ] switch app  x toggle  m apps  a add  e edit  i import  d delete  / filter  Esc back  ? help"
         }
     }
 
@@ -558,9 +558,9 @@ pub mod texts {
 
     pub fn tui_help_text() -> &'static str {
         if is_chinese() {
-            "[ ]  切换应用\n←→  切换菜单/内容焦点\n↑↓  移动\n/   过滤\nEsc  返回\n?   显示/关闭帮助\n\n页面快捷键（在页面内容区顶部显示）：\n- Providers: Enter 详情，s 切换，a 添加，e 编辑，d 删除，t 测速，c 健康检查\n- Provider Detail: s 切换，e 编辑，t 测速，c 健康检查\n- MCP: x 启用/禁用(当前应用)，m 选择应用，a 添加，e 编辑，i 导入，v 校验命令，d 删除\n- Prompts: Enter 查看，a 激活，x 取消激活(当前)，e 编辑，d 删除\n- Skills: Enter 详情，x 启用/禁用(当前应用)，a 安装，d 卸载，f 发现，u 未管理，r 仓库，s 同步，m 同步方式\n- Config: Enter 打开/执行，e 编辑片段\n- Settings: Enter 应用"
+            "[ ]  切换应用\n←→  切换菜单/内容焦点\n↑↓  移动\n/   过滤\nEsc  返回\n?   显示/关闭帮助\n\n页面快捷键（在页面内容区顶部显示）：\n- Providers: Enter 详情，s 切换，a 添加，e 编辑，d 删除，t 测速，c 健康检查\n- Provider Detail: s 切换，e 编辑，t 测速，c 健康检查\n- MCP: x 启用/禁用(当前应用)，m 选择应用，a 添加，e 编辑，i 导入，d 删除\n- Prompts: Enter 查看，a 激活，x 取消激活(当前)，e 编辑，d 删除\n- Skills: Enter 详情，x 启用/禁用(当前应用)，m 选择应用，d 卸载，i 导入已有\n- Config: Enter 打开/执行，e 编辑片段\n- Settings: Enter 应用"
         } else {
-            "[ ]  switch app\n←→  focus menu/content\n↑↓  move\n/   filter\nEsc  back\n?   toggle help\n\nPage keys (shown at the top of each page):\n- Providers: Enter details, s switch, a add, e edit, d delete, t speedtest, c stream check\n- Provider Detail: s switch, e edit, t speedtest, c stream check\n- MCP: x toggle current, m select apps, a add, e edit, i import, v validate, d delete\n- Prompts: Enter view, a activate, x deactivate active, e edit, d delete\n- Skills: Enter details, x toggle current, a install, d uninstall, f discover, u unmanaged, r repos, s sync, m sync method\n- Config: Enter open/run, e edit snippet\n- Settings: Enter apply"
+            "[ ]  switch app\n←→  focus menu/content\n↑↓  move\n/   filter\nEsc  back\n?   toggle help\n\nPage keys (shown at the top of each page):\n- Providers: Enter details, s switch, a add, e edit, d delete, t speedtest, c stream check\n- Provider Detail: s switch, e edit, t speedtest, c stream check\n- MCP: x toggle current, m select apps, a add, e edit, i import, d delete\n- Prompts: Enter view, a activate, x deactivate active, e edit, d delete\n- Skills: Enter details, x toggle current, m select apps, d uninstall, i import existing\n- Config: Enter open/run, e edit snippet\n- Settings: Enter apply"
         }
     }
 
@@ -1520,14 +1520,6 @@ pub mod texts {
         }
     }
 
-    pub fn tui_key_validate() -> &'static str {
-        if is_chinese() {
-            "校验"
-        } else {
-            "validate"
-        }
-    }
-
     pub fn tui_key_activate() -> &'static str {
         if is_chinese() {
             "激活"
@@ -2066,6 +2058,23 @@ pub mod texts {
         }
     }
 
+    pub fn tui_mcp_server_counts(
+        claude: usize,
+        codex: usize,
+        gemini: usize,
+        opencode: usize,
+    ) -> String {
+        if is_chinese() {
+            format!(
+                "已安装 · Claude: {claude} · Codex: {codex} · Gemini: {gemini} · OpenCode: {opencode}"
+            )
+        } else {
+            format!(
+                "Installed · Claude: {claude} · Codex: {codex} · Gemini: {gemini} · OpenCode: {opencode}"
+            )
+        }
+    }
+
     pub fn tui_skills_action_import_existing() -> &'static str {
         if is_chinese() {
             "导入已有"
@@ -2426,27 +2435,19 @@ pub mod texts {
         }
     }
 
+    pub fn tui_skill_apps_title(name: &str) -> String {
+        if is_chinese() {
+            format!("选择 Skill 应用: {}", name)
+        } else {
+            format!("Select Skill Apps: {}", name)
+        }
+    }
+
     pub fn tui_toast_provider_no_api_url() -> &'static str {
         if is_chinese() {
             "该供应商未配置 API URL。"
         } else {
             "No API URL configured for this provider."
-        }
-    }
-
-    pub fn tui_input_validate_command_title() -> &'static str {
-        if is_chinese() {
-            "校验命令"
-        } else {
-            "Validate Command"
-        }
-    }
-
-    pub fn tui_input_validate_command_prompt() -> &'static str {
-        if is_chinese() {
-            "命令名："
-        } else {
-            "Command name:"
         }
     }
 
@@ -3001,6 +3002,14 @@ pub mod texts {
         }
     }
 
+    pub fn tui_toast_skill_apps_updated() -> &'static str {
+        if is_chinese() {
+            "Skill 应用已更新。"
+        } else {
+            "Skill apps updated."
+        }
+    }
+
     pub fn tui_toast_skills_synced() -> &'static str {
         if is_chinese() {
             "Skills 同步完成。"
@@ -3258,22 +3267,6 @@ pub mod texts {
             format!(
                 "MCP updated, but live sync skipped for uninitialized client(s): {list}; run them once to initialize, then retry."
             )
-        }
-    }
-
-    pub fn tui_toast_command_available_in_path(command: &str) -> String {
-        if is_chinese() {
-            format!("✓ 命令 '{command}' 在 PATH 中可用")
-        } else {
-            format!("✓ Command '{command}' is available in PATH")
-        }
-    }
-
-    pub fn tui_toast_command_not_found_in_path(command: &str) -> String {
-        if is_chinese() {
-            format!("✗ 命令 '{command}' 在 PATH 中未找到")
-        } else {
-            format!("✗ Command '{command}' not found in PATH")
         }
     }
 
