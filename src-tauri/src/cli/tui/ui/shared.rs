@@ -113,15 +113,6 @@ pub(super) fn format_sync_time_local_to_minute(ts: i64) -> Option<String> {
         .map(|dt| dt.format("%Y/%m/%d %H:%M").to_string())
 }
 
-pub(super) fn app_display_name(app_type: &AppType) -> &'static str {
-    match app_type {
-        AppType::Claude => "Claude",
-        AppType::Codex => "Codex",
-        AppType::Gemini => "Gemini",
-        AppType::OpenCode => "OpenCode",
-    }
-}
-
 pub(super) fn format_uptime_compact(total_seconds: u64) -> String {
     let days = total_seconds / 86_400;
     let hours = (total_seconds % 86_400) / 3_600;
@@ -145,73 +136,24 @@ pub(super) fn format_uptime_compact(total_seconds: u64) -> String {
     parts.join(" ")
 }
 
-pub(super) fn format_proxy_rate_badge(value: Option<&str>) -> String {
-    let raw = value.unwrap_or("1").trim();
-    if raw.is_empty() {
-        return "x1.00".to_string();
+pub(super) fn format_estimated_token_compact(total: u64) -> String {
+    if total < 1_000 {
+        return format!("~{total}");
     }
 
-    match raw.parse::<f64>() {
-        Ok(parsed) => format!("x{parsed:.2}"),
-        Err(_) => format!("x{raw}"),
+    if total < 10_000 {
+        return format!("~{:.1}k", total as f64 / 1_000.0);
     }
-}
 
-pub(super) fn proxy_rate_spans(
-    theme: &super::theme::Theme,
-    multiplier: Option<&str>,
-) -> Vec<Span<'static>> {
-    let badge = format_proxy_rate_badge(multiplier);
-    let value_style = if theme.no_color {
-        Style::default().add_modifier(Modifier::BOLD)
-    } else {
-        Style::default()
-            .fg(Color::White)
-            .add_modifier(Modifier::BOLD)
-    };
-
-    vec![Span::styled(badge, value_style)]
-}
-
-pub(super) fn proxy_hero_heading(
-    app_type: &AppType,
-    proxy: &crate::cli::tui::data::ProxySnapshot,
-) -> String {
-    let app_name = app_display_name(app_type);
-    if proxy.takeover_enabled_for(app_type).is_none() {
-        texts::tui_proxy_dashboard_unsupported_app(app_name)
-    } else if proxy.routes_current_app_through_proxy(app_type) == Some(true) {
-        if let Some(target) = proxy
-            .current_app_target
-            .as_ref()
-            .map(|target| target.provider_name.trim())
-            .filter(|name| !name.is_empty())
-        {
-            format!(
-                "{} -> {target}",
-                texts::tui_proxy_dashboard_current_app_on(app_name)
-            )
-        } else {
-            texts::tui_proxy_dashboard_current_app_on(app_name)
-        }
-    } else {
-        texts::tui_proxy_dashboard_current_app_off(app_name)
+    if total < 1_000_000 {
+        return format!("~{}k", total / 1_000);
     }
-}
 
-pub(super) fn proxy_status_badge(
-    app_type: &AppType,
-    proxy: &crate::cli::tui::data::ProxySnapshot,
-) -> &'static str {
-    if proxy.takeover_enabled_for(app_type).is_none() {
-        texts::tui_proxy_dashboard_status_unsupported()
-    } else if proxy.routes_current_app_through_proxy(app_type) == Some(true) {
-        texts::tui_proxy_dashboard_status_running()
-    } else if proxy.takeover_enabled_for(app_type).is_some() {
-        texts::tui_proxy_dashboard_status_stopped()
-    } else {
-        texts::tui_proxy_dashboard_status_local_only()
+    if total < 10_000_000 {
+        return format!("~{:.1}M", total as f64 / 1_000_000.0);
     }
+
+    format!("~{}M", total / 1_000_000)
 }
 
 pub(super) fn kv_line<'a>(

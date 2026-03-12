@@ -222,27 +222,30 @@ mod tests {
     }
 
     #[test]
-    fn proxy_activity_records_real_request_deltas() {
+    fn proxy_activity_records_estimated_token_deltas() {
         let mut app = App::new(Some(AppType::Claude));
 
-        app.reset_proxy_activity(5);
-        app.observe_proxy_total_requests(5);
-        app.observe_proxy_total_requests(8);
-        app.observe_proxy_total_requests(10);
+        app.reset_proxy_activity(40, 80);
+        app.observe_proxy_token_activity(40, 80);
+        app.observe_proxy_token_activity(52, 108);
+        app.observe_proxy_token_activity(60, 124);
 
-        assert_eq!(app.proxy_activity_samples, vec![0, 3, 2]);
+        assert_eq!(app.proxy_input_activity_samples, vec![0, 12, 8]);
+        assert_eq!(app.proxy_output_activity_samples, vec![0, 28, 16]);
     }
 
     #[test]
-    fn proxy_activity_resets_when_counter_moves_backwards() {
+    fn proxy_activity_resets_when_token_counter_moves_backwards() {
         let mut app = App::new(Some(AppType::Claude));
 
-        app.reset_proxy_activity(10);
-        app.observe_proxy_total_requests(16);
-        app.observe_proxy_total_requests(3);
+        app.reset_proxy_activity(10, 20);
+        app.observe_proxy_token_activity(16, 36);
+        app.observe_proxy_token_activity(3, 8);
 
-        assert_eq!(app.proxy_activity_samples, vec![0]);
-        assert_eq!(app.proxy_activity_last_total_requests, Some(3));
+        assert_eq!(app.proxy_input_activity_samples, vec![0]);
+        assert_eq!(app.proxy_output_activity_samples, vec![0]);
+        assert_eq!(app.proxy_activity_last_input_tokens, Some(3));
+        assert_eq!(app.proxy_activity_last_output_tokens, Some(8));
     }
 
     #[test]

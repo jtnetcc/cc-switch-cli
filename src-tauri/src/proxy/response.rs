@@ -7,18 +7,23 @@ use std::{
     time::Duration,
 };
 
-use super::{error::ProxyError, providers::streaming::create_anthropic_sse_stream};
+use super::{
+    error::ProxyError, metrics::estimate_tokens_from_bytes,
+    providers::streaming::create_anthropic_sse_stream,
+};
 
 pub struct PreparedResponse {
     pub response: Response,
     pub stream_completion: Option<StreamCompletion>,
+    pub estimated_output_tokens: u64,
 }
 
 impl PreparedResponse {
-    fn buffered(response: Response) -> Self {
+    fn buffered(response: Response, estimated_output_tokens: u64) -> Self {
         Self {
             response,
             stream_completion: None,
+            estimated_output_tokens,
         }
     }
 
@@ -26,6 +31,7 @@ impl PreparedResponse {
         Self {
             response,
             stream_completion: Some(stream_completion),
+            estimated_output_tokens: 0,
         }
     }
 }
@@ -91,9 +97,10 @@ pub async fn build_passthrough_response(
     }
 
     let body = read_buffered_body(response, first_byte_timeout).await?;
+    let estimated_output_tokens = estimate_tokens_from_bytes(&body);
     builder
         .body(Body::from(body))
-        .map(PreparedResponse::buffered)
+        .map(|response| PreparedResponse::buffered(response, estimated_output_tokens))
         .map_err(|error| {
             ProxyError::RequestFailed(format!("build passthrough response failed: {error}"))
         })
@@ -115,6 +122,7 @@ where
     let response_body = serde_json::to_vec(&response_body).map_err(|error| {
         ProxyError::RequestFailed(format!("serialize transformed json failed: {error}"))
     })?;
+    let estimated_output_tokens = estimate_tokens_from_bytes(&response_body);
 
     let mut builder = Response::builder().status(status);
     copy_headers(&mut builder, &headers, false);
@@ -122,7 +130,7 @@ where
 
     builder
         .body(Body::from(response_body))
-        .map(PreparedResponse::buffered)
+        .map(|response| PreparedResponse::buffered(response, estimated_output_tokens))
         .map_err(|error| {
             ProxyError::RequestFailed(format!("build transformed response failed: {error}"))
         })
@@ -133,11 +141,12 @@ pub fn build_buffered_passthrough_response(
     headers: &reqwest::header::HeaderMap,
     body: Bytes,
 ) -> Result<PreparedResponse, ProxyError> {
+    let estimated_output_tokens = estimate_tokens_from_bytes(&body);
     let mut builder = Response::builder().status(status);
     copy_headers(&mut builder, headers, false);
     builder
         .body(Body::from(body))
-        .map(PreparedResponse::buffered)
+        .map(|response| PreparedResponse::buffered(response, estimated_output_tokens))
         .map_err(|error| {
             ProxyError::RequestFailed(format!("build passthrough response failed: {error}"))
         })
@@ -159,6 +168,7 @@ where
     let response_body = serde_json::to_vec(&response_body).map_err(|error| {
         ProxyError::RequestFailed(format!("serialize transformed json failed: {error}"))
     })?;
+    let estimated_output_tokens = estimate_tokens_from_bytes(&response_body);
 
     let mut builder = Response::builder().status(status);
     copy_headers(&mut builder, headers, false);
@@ -166,7 +176,7 @@ where
 
     builder
         .body(Body::from(response_body))
-        .map(PreparedResponse::buffered)
+        .map(|response| PreparedResponse::buffered(response, estimated_output_tokens))
         .map_err(|error| {
             ProxyError::RequestFailed(format!("build transformed response failed: {error}"))
         })

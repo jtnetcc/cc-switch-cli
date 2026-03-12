@@ -39,6 +39,7 @@ mod mcp;
 mod overlay;
 mod prompts;
 mod providers;
+mod proxy_wave;
 mod shared;
 mod skills;
 
@@ -54,6 +55,7 @@ use mcp::*;
 use overlay::*;
 use prompts::*;
 use providers::*;
+use proxy_wave::*;
 use shared::*;
 use skills::*;
 

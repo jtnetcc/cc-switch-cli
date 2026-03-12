@@ -62,6 +62,26 @@ impl ProxyServerState {
         status.last_request_at = Some(chrono::Utc::now().to_rfc3339());
     }
 
+    pub async fn record_estimated_input_tokens(&self, tokens: u64) {
+        if tokens == 0 {
+            return;
+        }
+
+        let mut status = self.status.write().await;
+        status.estimated_input_tokens_total =
+            status.estimated_input_tokens_total.saturating_add(tokens);
+    }
+
+    pub async fn record_estimated_output_tokens(&self, tokens: u64) {
+        if tokens == 0 {
+            return;
+        }
+
+        let mut status = self.status.write().await;
+        status.estimated_output_tokens_total =
+            status.estimated_output_tokens_total.saturating_add(tokens);
+    }
+
     pub async fn record_active_target(&self, app_type: &AppType, provider: &Provider) {
         self.current_providers.write().await.insert(
             app_type.as_str().to_string(),

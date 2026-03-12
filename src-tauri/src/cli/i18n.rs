@@ -1031,6 +1031,14 @@ pub mod texts {
         }
     }
 
+    pub fn tui_proxy_dashboard_tokens_idle() -> &'static str {
+        if is_chinese() {
+            "暂无 token 流量"
+        } else {
+            "No token traffic yet"
+        }
+    }
+
     pub fn tui_proxy_dashboard_target_waiting() -> &'static str {
         if is_chinese() {
             "等待首个请求"
@@ -1044,6 +1052,14 @@ pub mod texts {
             format!("{total} 总计 / {success_rate:.1}% 成功")
         } else {
             format!("{total} total / {success_rate:.1}% success")
+        }
+    }
+
+    pub fn tui_proxy_dashboard_token_summary(output: &str, input: &str) -> String {
+        if is_chinese() {
+            format!("{output} 下行 / {input} 上行")
+        } else {
+            format!("{output} out / {input} in")
         }
     }
 
@@ -1100,6 +1116,14 @@ pub mod texts {
             "请求"
         } else {
             "Requests"
+        }
+    }
+
+    pub fn tui_label_traffic() -> &'static str {
+        if is_chinese() {
+            "流量"
+        } else {
+            "Traffic"
         }
     }
 

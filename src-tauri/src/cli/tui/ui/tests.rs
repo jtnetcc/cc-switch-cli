@@ -92,7 +92,11 @@ impl Drop for EnvGuard {
 }
 
 fn render(app: &App, data: &UiData) -> Buffer {
-    let backend = TestBackend::new(120, 40);
+    render_with_size(app, data, 120, 40)
+}
+
+fn render_with_size(app: &App, data: &UiData, width: u16, height: u16) -> Buffer {
+    let backend = TestBackend::new(width, height);
     let mut terminal = Terminal::new(backend).expect("terminal created");
     terminal
         .draw(|f| super::render(f, app, data))
@@ -654,6 +658,8 @@ fn home_shows_proxy_dashboard_when_current_app_proxy_is_on() {
     app.tick = 2;
     app.route = Route::Main;
     app.focus = Focus::Content;
+    app.proxy_output_activity_samples = vec![0, 1, 4, 8, 4, 1, 0];
+    app.proxy_input_activity_samples = vec![0, 1, 2, 4, 2, 1, 0];
 
     let mut data = minimal_data(&app.app_type);
     data.proxy.running = true;
@@ -663,6 +669,8 @@ fn home_shows_proxy_dashboard_when_current_app_proxy_is_on() {
     data.proxy.uptime_seconds = 3661;
     data.proxy.total_requests = 7;
     data.proxy.success_rate = Some(85.7);
+    data.proxy.estimated_input_tokens_total = 1_200;
+    data.proxy.estimated_output_tokens_total = 4_800;
     data.proxy.current_provider = Some("Claude Test Provider".to_string());
     data.proxy.current_app_target = Some(super::super::data::ProxyTargetSnapshot {
         provider_name: "Claude Test Provider".to_string(),
@@ -679,24 +687,55 @@ fn home_shows_proxy_dashboard_when_current_app_proxy_is_on() {
     let dashboard_idx = all
         .find("Proxy Dashboard")
         .expect("proxy dashboard should render");
+    let traffic_idx = all
+        .find("Proxy Dashboard   ▲ ~4.8k / ▼ ~1.2k")
+        .expect("proxy title badge should render inline");
+    let waveform_idx = all.find('⣿').expect("waveform should render");
+    let meta_rows = (0..buf.area.height)
+        .filter(|y| {
+            let line = line_at(&buf, *y);
+            line.contains("Uptime:") || line.contains("Last proxy error:")
+        })
+        .collect::<Vec<_>>();
 
     assert!(all.contains("Proxy Dashboard"), "{all}");
     assert!(all.contains("┌ Proxy Dashboard "), "{all}");
     assert!(dashboard_idx > local_env_idx, "{all}");
     assert!(!all.contains("___  ___"), "{all}");
     assert!(all.contains("Use the left menu"), "{all}");
-    assert!(all.contains("ACTIVE"));
-    assert!(all.contains("Claude active -> Claude Test Provider"));
-    assert!(all.contains("x1.50"));
+    assert!(traffic_idx < waveform_idx, "{all}");
+    assert!(meta_rows.len() <= 2, "{all}");
+    assert!(!all.contains("ACTIVE"), "{all}");
+    assert!(
+        !all.contains("Claude active -> Claude Test Provider"),
+        "{all}"
+    );
+    assert!(!all.contains("x1.50"), "{all}");
+    assert!(all.contains('⣿'), "{all}");
+    assert!(
+        all.contains('⣀') || all.contains('⣄') || all.contains('⣤'),
+        "{all}"
+    );
+    assert!(
+        all.contains('⠁')
+            || all.contains('⠉')
+            || all.contains('⠋')
+            || all.contains('⠛')
+            || all.contains('⣿'),
+        "{all}"
+    );
     assert!(!all.contains("[=   ]"), "{all}");
     assert!(!all.contains("[==  ]"), "{all}");
     assert!(!all.contains("[=== ]"), "{all}");
     assert!(!all.contains("[ ==]"), "{all}");
+    assert!(!all.contains('▁'), "{all}");
     assert!(all.contains("127.0.0.1:3456"));
     assert!(all.contains("1h 1m 1s"));
-    assert!(all.contains("7 total / 85.7% success"));
-    assert!(all.contains("Claude Test Provider"));
+    assert!(all.contains("▲ ~4.8k / ▼ ~1.2k"), "{all}");
+    assert!(!all.contains("Traffic:"), "{all}");
+    assert!(!all.contains("Claude Test Provider"), "{all}");
     assert!(all.contains("last upstream failure"), "{all}");
+    assert!(!all.contains("Active target:"), "{all}");
     assert!(footer.contains("proxy off"), "{footer}");
     assert!(!all.contains("Current app takeover"));
     assert!(!all.contains("Manual routing only"));
@@ -780,7 +819,7 @@ fn home_proxy_dashboard_hides_attach_cta_for_foreground_runtime_owned_elsewhere(
 }
 
 #[test]
-fn home_proxy_dashboard_shows_static_rate_badge_without_pulse() {
+fn home_proxy_dashboard_shows_idle_baseline_without_header_copy() {
     let _lock = lock_env();
     let _no_color = EnvGuard::remove("NO_COLOR");
 
@@ -793,6 +832,8 @@ fn home_proxy_dashboard_shows_static_rate_badge_without_pulse() {
     active.proxy.running = true;
     active.proxy.managed_runtime = true;
     active.proxy.claude_takeover = true;
+    active.proxy.estimated_input_tokens_total = 0;
+    active.proxy.estimated_output_tokens_total = 0;
     active.proxy.default_cost_multiplier = Some("1.25".to_string());
     active.proxy.current_app_target = Some(super::super::data::ProxyTargetSnapshot {
         provider_name: "Claude Test Provider".to_string(),
@@ -800,12 +841,19 @@ fn home_proxy_dashboard_shows_static_rate_badge_without_pulse() {
 
     let active_buf = render(&app, &active);
     let active_text = all_text(&active_buf);
-    assert!(active_text.contains("x1.25"), "{active_text}");
+    assert!(!active_text.contains("x1.25"), "{active_text}");
+    assert!(!active_text.contains("ACTIVE"), "{active_text}");
+    assert!(
+        active_text.contains('⡀') || active_text.contains('⠁'),
+        "{active_text}"
+    );
     assert!(!active_text.contains("[=   ]"), "{active_text}");
     assert!(!active_text.contains("[==  ]"), "{active_text}");
     assert!(!active_text.contains("[=== ]"), "{active_text}");
     assert!(!active_text.contains("[ ==]"), "{active_text}");
     assert!(active_text.contains("Proxy Dashboard"));
+    assert!(active_text.contains("▲ ~0 / ▼ ~0"), "{active_text}");
+    assert!(!active_text.contains("Traffic:"), "{active_text}");
 
     let mut shared_runtime = minimal_data(&app.app_type);
     shared_runtime.proxy.running = true;
@@ -820,6 +868,41 @@ fn home_proxy_dashboard_shows_static_rate_badge_without_pulse() {
     assert!(!shared_text.contains("Proxy Dashboard"), "{shared_text}");
     assert!(!shared_text.contains("x1.25"), "{shared_text}");
     assert!(shared_footer.contains("proxy on"), "{shared_footer}");
+}
+
+#[test]
+fn home_proxy_dashboard_stacks_text_on_narrow_terminals() {
+    let _lock = lock_env();
+    let _no_color = EnvGuard::remove("NO_COLOR");
+
+    let mut app = App::new(Some(AppType::Claude));
+    app.route = Route::Main;
+    app.focus = Focus::Content;
+
+    let mut data = minimal_data(&app.app_type);
+    data.proxy.running = true;
+    data.proxy.claude_takeover = true;
+    data.proxy.listen_address = "127.0.0.1".to_string();
+    data.proxy.listen_port = 3456;
+    data.proxy.total_requests = 12;
+    data.proxy.success_rate = Some(91.7);
+    data.proxy.uptime_seconds = 3661;
+    data.proxy.current_app_target = Some(super::super::data::ProxyTargetSnapshot {
+        provider_name: "Claude Test Provider With A Very Long Name".to_string(),
+    });
+    data.proxy.last_error = Some(
+        "last upstream failure with a much longer detail that should truncate cleanly".to_string(),
+    );
+
+    let buf = render_with_size(&app, &data, 80, 24);
+    let all = all_text(&buf);
+
+    assert!(all.contains("▲ ~0 / ▼ ~0"), "{all}");
+    assert!(all.contains("Listen"), "{all}");
+    assert!(all.contains("Uptime"), "{all}");
+    assert!(all.contains("proxy") && all.contains("error"), "{all}");
+    assert!(!all.contains("Active target"), "{all}");
+    assert!(all.contains('⡀') || all.contains('⠁'), "{all}");
 }
 
 #[test]
@@ -859,8 +942,8 @@ fn transition_effect_changes_dashboard_cells_during_proxy_start() {
     let settled_buf = render(&app, &on);
     let settled_text = all_text(&settled_buf);
     let content_y = (0..settled_buf.area.height)
-        .find(|y| line_at(&settled_buf, *y).contains("Requests:"))
-        .expect("dashboard requests line should render after transition");
+        .find(|y| line_at(&settled_buf, *y).contains("Listen:"))
+        .expect("dashboard metadata line should render after transition");
     let padding_x = (70..settled_buf.area.width.saturating_sub(2))
         .rev()
         .find(|x| {
@@ -868,7 +951,6 @@ fn transition_effect_changes_dashboard_cells_during_proxy_start() {
                 && settled_buf[(*x, content_y)].symbol() == " "
         })
         .expect("should find padded blank cell inside dashboard line");
-
     assert!(settled_text.contains("Proxy Dashboard"), "{settled_text}");
     assert_eq!(transition_text, settled_text);
     assert!(!transition_text.contains("___  ___"), "{transition_text}");
@@ -887,9 +969,14 @@ fn proxy_activity_wave_uses_real_request_history() {
     let flat = super::main_page::proxy_activity_wave(8, true, &[0, 0, 0, 0]);
     let burst = super::main_page::proxy_activity_wave(8, true, &[0, 1, 4, 8]);
 
-    assert_eq!(flat, "▁▁▁▁▁▁▁▁");
+    assert_eq!(flat, "⡀⡀⡀⡀⡀⡀⡀⡀");
     assert_ne!(burst, flat);
-    assert!(burst.contains('█'));
+    assert!(burst.contains('⡀'), "{burst}");
+    assert!(burst.contains('⣿'), "{burst}");
+    assert!(
+        burst.contains('⣀') || burst.contains('⣄') || burst.contains('⣤'),
+        "{burst}"
+    );
 }
 
 #[test]
@@ -942,7 +1029,7 @@ fn home_proxy_dashboard_shows_proxy_off_shortcut_when_current_app_is_active() {
     let footer = line_at(&buf, buf.area.height - 1);
 
     assert!(footer.contains("proxy off"), "{footer}");
-    assert!(all.contains("ACTIVE"));
+    assert!(!all.contains("ACTIVE"), "{all}");
     assert!(all.contains("Proxy Dashboard"));
 }
 

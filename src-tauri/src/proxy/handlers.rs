@@ -12,6 +12,7 @@ use crate::app_config::AppType;
 use super::{
     forwarder::{ForwardOptions, RequestForwarder},
     handler_context::HandlerContext,
+    metrics::estimate_tokens_from_value,
     providers::{ClaudeAdapter, ProviderAdapter},
     response::{
         build_anthropic_stream_response, build_buffered_json_response,
@@ -89,6 +90,9 @@ async fn handle_claude_request(
     headers: HeaderMap,
     body: Value,
 ) -> Response {
+    state
+        .record_estimated_input_tokens(estimate_tokens_from_value(&body))
+        .await;
     let context = match HandlerContext::load(&state, AppType::Claude).await {
         Ok(context) => context,
         Err(error) => {
@@ -196,6 +200,9 @@ async fn handle_passthrough_request(
     app_type: AppType,
     endpoint: String,
 ) -> Response {
+    state
+        .record_estimated_input_tokens(estimate_tokens_from_value(&body))
+        .await;
     let context = match HandlerContext::load(&state, app_type).await {
         Ok(context) => context,
         Err(error) => {

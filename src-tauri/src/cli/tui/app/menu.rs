@@ -20,8 +20,10 @@ impl App {
             should_quit: false,
             last_size: Size::new(0, 0),
             tick: 0,
-            proxy_activity_samples: Vec::new(),
-            proxy_activity_last_total_requests: None,
+            proxy_input_activity_samples: Vec::new(),
+            proxy_output_activity_samples: Vec::new(),
+            proxy_activity_last_input_tokens: None,
+            proxy_activity_last_output_tokens: None,
             proxy_visual_state: None,
             proxy_visual_transition: None,
             local_env_results: Vec::new(),
@@ -142,30 +144,47 @@ impl App {
         matches!(self.route, Route::Main) && self.tick % PROXY_ACTIVITY_POLL_INTERVAL_TICKS == 0
     }
 
-    pub(crate) fn reset_proxy_activity(&mut self, total_requests: u64) {
-        self.proxy_activity_samples.clear();
-        self.proxy_activity_last_total_requests = Some(total_requests);
+    pub(crate) fn reset_proxy_activity(&mut self, input_tokens: u64, output_tokens: u64) {
+        self.proxy_input_activity_samples.clear();
+        self.proxy_output_activity_samples.clear();
+        self.proxy_activity_last_input_tokens = Some(input_tokens);
+        self.proxy_activity_last_output_tokens = Some(output_tokens);
     }
 
-    pub(crate) fn observe_proxy_total_requests(&mut self, total_requests: u64) {
-        let Some(previous_total) = self
-            .proxy_activity_last_total_requests
-            .replace(total_requests)
+    pub(crate) fn observe_proxy_token_activity(&mut self, input_tokens: u64, output_tokens: u64) {
+        let Some(previous_input) = self.proxy_activity_last_input_tokens.replace(input_tokens)
+        else {
+            return;
+        };
+        let Some(previous_output) = self
+            .proxy_activity_last_output_tokens
+            .replace(output_tokens)
         else {
             return;
         };
 
-        let delta = if total_requests < previous_total {
-            self.proxy_activity_samples.clear();
-            0
-        } else {
-            total_requests.saturating_sub(previous_total)
-        };
+        let (input_delta, output_delta) =
+            if input_tokens < previous_input || output_tokens < previous_output {
+                self.proxy_input_activity_samples.clear();
+                self.proxy_output_activity_samples.clear();
+                (0, 0)
+            } else {
+                (
+                    input_tokens.saturating_sub(previous_input),
+                    output_tokens.saturating_sub(previous_output),
+                )
+            };
 
-        self.proxy_activity_samples.push(delta);
-        if self.proxy_activity_samples.len() > PROXY_ACTIVITY_WINDOW {
-            let overflow = self.proxy_activity_samples.len() - PROXY_ACTIVITY_WINDOW;
-            self.proxy_activity_samples.drain(0..overflow);
+        self.proxy_input_activity_samples.push(input_delta);
+        self.proxy_output_activity_samples.push(output_delta);
+
+        if self.proxy_input_activity_samples.len() > PROXY_ACTIVITY_WINDOW {
+            let overflow = self.proxy_input_activity_samples.len() - PROXY_ACTIVITY_WINDOW;
+            self.proxy_input_activity_samples.drain(0..overflow);
+        }
+        if self.proxy_output_activity_samples.len() > PROXY_ACTIVITY_WINDOW {
+            let overflow = self.proxy_output_activity_samples.len() - PROXY_ACTIVITY_WINDOW;
+            self.proxy_output_activity_samples.drain(0..overflow);
         }
     }
 

@@ -82,6 +82,8 @@ pub struct ProxySnapshot {
     pub listen_port: u16,
     pub uptime_seconds: u64,
     pub total_requests: u64,
+    pub estimated_input_tokens_total: u64,
+    pub estimated_output_tokens_total: u64,
     pub success_rate: Option<f32>,
     pub current_provider: Option<String>,
     pub last_error: Option<String>,
@@ -333,6 +335,8 @@ fn load_proxy_snapshot(app_type: &AppType) -> Result<ProxySnapshot, AppError> {
             listen_port,
             uptime_seconds: runtime_status.uptime_seconds,
             total_requests: runtime_status.total_requests,
+            estimated_input_tokens_total: runtime_status.estimated_input_tokens_total,
+            estimated_output_tokens_total: runtime_status.estimated_output_tokens_total,
             success_rate: (runtime_status.total_requests > 0)
                 .then_some(runtime_status.success_rate),
             current_provider: runtime_status
@@ -464,6 +468,8 @@ mod tests {
             listen_port: 15721,
             uptime_seconds: 42,
             total_requests: 7,
+            estimated_input_tokens_total: 420,
+            estimated_output_tokens_total: 960,
             success_rate: Some(85.7),
             current_provider: Some("Claude Test Provider".to_string()),
             last_error: Some("last upstream failure".to_string()),
@@ -478,6 +484,8 @@ mod tests {
         assert_eq!(snapshot.default_cost_multiplier.as_deref(), Some("1.5"));
         assert_eq!(snapshot.listen_address, "127.0.0.1");
         assert_eq!(snapshot.listen_port, 15721);
+        assert_eq!(snapshot.estimated_input_tokens_total, 420);
+        assert_eq!(snapshot.estimated_output_tokens_total, 960);
         assert_eq!(snapshot.success_rate, Some(85.7));
         assert_eq!(
             snapshot

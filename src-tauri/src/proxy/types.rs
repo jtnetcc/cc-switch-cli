@@ -68,6 +68,12 @@ pub struct ProxyStatus {
     pub active_connections: usize,
     /// 总请求数
     pub total_requests: u64,
+    /// 估算的输入 token 总量
+    #[serde(default)]
+    pub estimated_input_tokens_total: u64,
+    /// 估算的输出 token 总量
+    #[serde(default)]
+    pub estimated_output_tokens_total: u64,
     /// 成功请求数
     pub success_requests: u64,
     /// 失败请求数

@@ -250,8 +250,10 @@ pub struct App {
     pub should_quit: bool,
     pub last_size: Size,
     pub tick: u64,
-    pub proxy_activity_samples: Vec<u64>,
-    pub proxy_activity_last_total_requests: Option<u64>,
+    pub proxy_input_activity_samples: Vec<u64>,
+    pub proxy_output_activity_samples: Vec<u64>,
+    pub proxy_activity_last_input_tokens: Option<u64>,
+    pub proxy_activity_last_output_tokens: Option<u64>,
     pub proxy_visual_state: Option<bool>,
     pub proxy_visual_transition: Option<ProxyVisualTransition>,
 

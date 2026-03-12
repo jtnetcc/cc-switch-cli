@@ -89,7 +89,10 @@ pub(crate) fn handle_action(
             let next_data = UiData::load(&next)?;
             ctx.app.app_type = next;
             *ctx.data = next_data;
-            ctx.app.reset_proxy_activity(ctx.data.proxy.total_requests);
+            ctx.app.reset_proxy_activity(
+                ctx.data.proxy.estimated_input_tokens_total,
+                ctx.data.proxy.estimated_output_tokens_total,
+            );
             Ok(())
         }
         Action::LocalEnvRefresh => {

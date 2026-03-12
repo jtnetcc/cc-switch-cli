@@ -404,7 +404,10 @@ pub(crate) fn handle_proxy_msg(
             match result {
                 Ok(()) => {
                     *data = UiData::load(&app.app_type)?;
-                    app.reset_proxy_activity(data.proxy.total_requests);
+                    app.reset_proxy_activity(
+                        data.proxy.estimated_input_tokens_total,
+                        data.proxy.estimated_output_tokens_total,
+                    );
                     app.push_toast(
                         texts::tui_toast_proxy_managed_current_app_updated(
                             app_display_name(&app_type),

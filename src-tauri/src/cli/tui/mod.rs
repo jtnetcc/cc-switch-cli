@@ -96,7 +96,10 @@ pub fn run(app_override: Option<AppType>) -> Result<(), AppError> {
     let mut app = App::new(app_override);
     let mut data = data::UiData::load(&app.app_type)?;
     let mut proxy_open_flash = ProxyOpenFlash::default();
-    app.reset_proxy_activity(data.proxy.total_requests);
+    app.reset_proxy_activity(
+        data.proxy.estimated_input_tokens_total,
+        data.proxy.estimated_output_tokens_total,
+    );
     app.observe_proxy_visual_state(&data);
 
     let tick_rate = TUI_TICK_RATE;
@@ -349,7 +352,10 @@ pub fn run(app_override: Option<AppType>) -> Result<(), AppError> {
                 if let Err(err) = data.refresh_proxy_snapshot(&app.app_type) {
                     log::debug!("refresh proxy snapshot failed: {err}");
                 } else {
-                    app.observe_proxy_total_requests(data.proxy.total_requests);
+                    app.observe_proxy_token_activity(
+                        data.proxy.estimated_input_tokens_total,
+                        data.proxy.estimated_output_tokens_total,
+                    );
                 }
             }
             last_tick = Instant::now();

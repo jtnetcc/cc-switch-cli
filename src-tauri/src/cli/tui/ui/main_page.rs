@@ -47,58 +47,20 @@ pub(super) fn render_main(
     };
 
     let proxy_running = data.proxy.running;
-    let app_supports_proxy_control = data.proxy.takeover_enabled_for(&app.app_type).is_some();
     let current_app_routed = data
         .proxy
         .routes_current_app_through_proxy(&app.app_type)
         .unwrap_or(false);
-    let hero_heading = proxy_hero_heading(&app.app_type, &data.proxy);
-    let proxy_badge = proxy_status_badge(&app.app_type, &data.proxy);
-    let proxy_badge_style = if theme.no_color {
-        Style::default().add_modifier(Modifier::BOLD)
-    } else if current_app_routed {
-        Style::default()
-            .fg(Color::Black)
-            .bg(theme.ok)
-            .add_modifier(Modifier::BOLD)
-    } else if app_supports_proxy_control {
-        Style::default()
-            .fg(Color::Black)
-            .bg(theme.warn)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default()
-            .fg(Color::Black)
-            .bg(theme.surface)
-            .add_modifier(Modifier::BOLD)
-    };
     let uptime_text = if proxy_running {
         format_uptime_compact(data.proxy.uptime_seconds)
     } else {
         texts::tui_proxy_dashboard_uptime_stopped().to_string()
-    };
-    let request_text = match (data.proxy.total_requests, data.proxy.success_rate) {
-        (0, _) => texts::tui_proxy_dashboard_requests_idle().to_string(),
-        (total, Some(rate)) => texts::tui_proxy_dashboard_request_summary(total, rate),
-        (total, None) => total.to_string(),
     };
     let proxy_last_error_text = data
         .proxy
         .last_error
         .clone()
         .unwrap_or_else(|| texts::none().to_string());
-    let active_target = if current_app_routed {
-        data.proxy
-            .current_app_target
-            .as_ref()
-            .map(|target| target.provider_name.trim())
-            .filter(|name| !name.is_empty())
-            .map(str::to_string)
-            .unwrap_or_else(|| texts::tui_proxy_dashboard_target_waiting().to_string())
-    } else {
-        String::new()
-    };
-
     let connection_lines = vec![
         kv_line(
             theme,
@@ -242,7 +204,7 @@ pub(super) fn render_main(
 
     let inner = block.inner(area);
     let content = inset_left(inner, CONTENT_INSET_LEFT);
-    let bottom_hero_height = if current_app_routed { 8 } else { 7 };
+    let bottom_hero_height = if current_app_routed { 11 } else { 7 };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(0), Constraint::Length(bottom_hero_height)])
@@ -276,18 +238,14 @@ pub(super) fn render_main(
             frame,
             hero_chunks[0],
             theme,
-            proxy_badge,
-            proxy_badge_style,
-            &app.proxy_activity_samples,
-            &hero_heading,
-            &request_text,
+            &app.proxy_input_activity_samples,
+            &app.proxy_output_activity_samples,
             &uptime_text,
-            &active_target,
             &proxy_last_error_text,
             data.proxy.last_error.is_some(),
             &format!("{}:{}", data.proxy.listen_address, data.proxy.listen_port),
-            data.proxy.default_cost_multiplier.as_deref(),
-            data.proxy.total_requests,
+            data.proxy.estimated_input_tokens_total,
+            data.proxy.estimated_output_tokens_total,
         );
     } else {
         render_logo_hero(frame, hero_chunks[0], theme);
@@ -309,120 +267,150 @@ fn render_proxy_activity_dashboard(
     frame: &mut Frame<'_>,
     area: Rect,
     theme: &super::theme::Theme,
-    proxy_badge: &str,
-    proxy_badge_style: Style,
-    activity_samples: &[u64],
-    hero_heading: &str,
-    request_text: &str,
+    input_activity_samples: &[u64],
+    output_activity_samples: &[u64],
     uptime_text: &str,
-    active_target: &str,
     proxy_last_error_text: &str,
     has_proxy_error: bool,
     listen_text: &str,
-    multiplier: Option<&str>,
-    total_requests: u64,
+    input_tokens_total: u64,
+    output_tokens_total: u64,
 ) -> Rect {
+    let has_token_traffic = input_tokens_total > 0 || output_tokens_total > 0;
+    let title_output_style = if has_token_traffic {
+        Style::default()
+            .fg(theme.accent)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(theme.surface)
+    };
+    let title_input_style = if has_token_traffic {
+        Style::default().fg(theme.cyan).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(theme.surface)
+    };
     let outer = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Plain)
         .border_style(Style::default().fg(theme.accent))
-        .title(format!(" {} ", texts::tui_home_section_proxy()));
+        .title(Line::from(vec![
+            Span::raw(format!(" {}   ", texts::tui_home_section_proxy())),
+            Span::styled(
+                format!("▲ {}", format_estimated_token_compact(output_tokens_total)),
+                title_output_style,
+            ),
+            Span::styled(" / ", Style::default().fg(theme.comment)),
+            Span::styled(
+                format!("▼ {}", format_estimated_token_compact(input_tokens_total)),
+                title_input_style,
+            ),
+            Span::raw(" "),
+        ]));
     frame.render_widget(outer.clone(), area);
 
     let inner = outer.inner(area);
-    let wave_width = inner.width.saturating_sub(2);
-    let wave = proxy_activity_wave(wave_width, true, activity_samples);
-    let wave_style = Style::default().fg(theme.accent);
-    let hero_style = if theme.no_color {
-        Style::default().add_modifier(Modifier::BOLD)
-    } else {
-        Style::default()
-            .fg(Color::White)
-            .add_modifier(Modifier::BOLD)
-    };
-    let badge = format!("[{proxy_badge}]");
-    let mut status_spans = vec![
-        Span::styled(texts::tui_home_section_proxy(), hero_style),
-        Span::raw("  "),
-        Span::styled(badge, proxy_badge_style),
-        Span::raw(" "),
-        Span::styled(hero_heading.to_string(), hero_style),
-    ];
-    status_spans.push(Span::raw("   "));
-    status_spans.extend(proxy_rate_spans(theme, multiplier));
-    let status_line = Line::from(status_spans);
-
-    let request_style = if total_requests > 0 {
-        Style::default().fg(theme.cyan)
-    } else {
-        Style::default().fg(theme.surface)
-    };
-    let target_style = if active_target == texts::tui_proxy_dashboard_target_waiting() {
-        Style::default().fg(theme.surface)
-    } else {
-        Style::default().fg(theme.cyan)
+    let label_style = Style::default()
+        .fg(theme.comment)
+        .add_modifier(Modifier::BOLD);
+    let mut meta_spans = Vec::new();
+    let mut meta_plain = String::new();
+    let mut push_segment = |label: &'static str, value: &str, style: Style| {
+        if !meta_spans.is_empty() {
+            meta_spans.push(Span::raw("  "));
+            meta_plain.push_str("  ");
+        }
+        meta_spans.push(Span::styled(format!("{label}: "), label_style));
+        meta_spans.push(Span::styled(value.to_string(), style));
+        meta_plain.push_str(label);
+        meta_plain.push_str(": ");
+        meta_plain.push_str(value);
     };
 
-    let summary_line = Line::from(vec![
-        Span::styled(
-            format!("{}: ", texts::tui_label_requests()),
-            Style::default()
-                .fg(theme.comment)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(request_text.to_string(), request_style),
-        Span::raw("   "),
-        Span::styled(
-            format!("{}: ", texts::tui_label_listen()),
-            Style::default()
-                .fg(theme.comment)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(listen_text.to_string(), Style::default().fg(theme.cyan)),
-    ]);
-
-    let detail_line = Line::from(vec![
-        Span::styled(
-            format!("{}: ", texts::tui_label_uptime()),
-            Style::default()
-                .fg(theme.comment)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(uptime_text.to_string(), Style::default().fg(theme.cyan)),
-        Span::raw("   "),
-        Span::styled(
-            format!("{}: ", texts::tui_label_active_target()),
-            Style::default()
-                .fg(theme.comment)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(active_target.to_string(), target_style),
-    ]);
-
-    let mut lines = vec![
-        status_line,
-        Line::from(vec![Span::raw(" "), Span::styled(wave, wave_style)]),
-        summary_line,
-        detail_line,
-    ];
-
+    push_segment(
+        texts::tui_label_listen(),
+        listen_text,
+        Style::default().fg(theme.cyan),
+    );
+    push_segment(
+        texts::tui_label_uptime(),
+        uptime_text,
+        Style::default().fg(theme.cyan),
+    );
     if has_proxy_error {
-        lines.push(Line::from(vec![
-            Span::styled(
-                format!("{}: ", texts::tui_label_last_proxy_error()),
-                Style::default()
-                    .fg(theme.comment)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                proxy_last_error_text.to_string(),
-                Style::default().fg(theme.warn),
-            ),
-        ]));
+        push_segment(
+            texts::tui_label_last_proxy_error(),
+            proxy_last_error_text,
+            Style::default().fg(theme.warn),
+        );
     }
 
-    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+    let max_text_height = inner.height.saturating_sub(2).clamp(1, 4);
+    let text_height = wrapped_display_line_count(&meta_plain, inner.width).min(max_text_height);
+    let graph_height = inner.height.saturating_sub(text_height).max(2);
+    let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(text_height),
+            Constraint::Length(graph_height),
+            Constraint::Min(0),
+        ])
+        .split(inner);
+
+    frame.render_widget(
+        Paragraph::new(Line::from(meta_spans)).wrap(Wrap { trim: false }),
+        sections[0],
+    );
+
+    let upper_height = (graph_height / 2).max(1);
+    let lower_height = graph_height.saturating_sub(upper_height).max(1);
+    let wave_width = sections[1].width.saturating_sub(1);
+    let mut graph_lines = Vec::new();
+    let upper_style = Style::default().fg(theme.accent);
+    let lower_style = if theme.no_color {
+        Style::default()
+    } else {
+        Style::default().fg(theme.cyan)
+    };
+
+    graph_lines.extend(
+        proxy_wave_lines(
+            wave_width,
+            upper_height,
+            true,
+            output_activity_samples,
+            &DOTS,
+            false,
+        )
+        .into_iter()
+        .map(|row| Line::from(vec![Span::raw(" "), Span::styled(row, upper_style)])),
+    );
+    graph_lines.extend(
+        proxy_wave_lines(
+            wave_width,
+            lower_height,
+            true,
+            input_activity_samples,
+            &REV_DOTS,
+            true,
+        )
+        .into_iter()
+        .map(|row| Line::from(vec![Span::raw(" "), Span::styled(row, lower_style)])),
+    );
+
+    frame.render_widget(
+        Paragraph::new(graph_lines).wrap(Wrap { trim: false }),
+        sections[1],
+    );
+
     inner
+}
+
+fn wrapped_display_line_count(text: &str, width: u16) -> u16 {
+    if width == 0 {
+        return 1;
+    }
+
+    UnicodeWidthStr::width(text).max(1).div_ceil(width as usize) as u16
 }
 
 fn render_logo_hero(frame: &mut Frame<'_>, area: Rect, theme: &super::theme::Theme) {
@@ -623,35 +611,10 @@ fn render_local_env_check_card(
     }
 }
 
+#[cfg(test)]
 pub(super) fn proxy_activity_wave(width: u16, current_app_routed: bool, samples: &[u64]) -> String {
-    const BARS: [&str; 8] = ["·", "▁", "▂", "▃", "▄", "▅", "▆", "█"];
-
-    let width = width.max(1) as usize;
-    if !current_app_routed {
-        return BARS[1].repeat(width);
-    }
-
-    let recent = if samples.len() > width {
-        &samples[samples.len() - width..]
-    } else {
-        samples
-    };
-    let max_delta = recent.iter().copied().max().unwrap_or(0);
-
-    let mut out = String::with_capacity(width * 3);
-    for _ in 0..width.saturating_sub(recent.len()) {
-        out.push_str(BARS[1]);
-    }
-
-    for delta in recent {
-        let level = if max_delta == 0 {
-            1
-        } else {
-            let scaled = 1 + ((*delta * 6) / max_delta) as usize;
-            scaled.clamp(1, 7)
-        };
-        out.push_str(BARS[level]);
-    }
-
-    out
+    proxy_wave_lines(width, 1, current_app_routed, samples, &DOTS, false)
+        .into_iter()
+        .next()
+        .unwrap_or_default()
 }

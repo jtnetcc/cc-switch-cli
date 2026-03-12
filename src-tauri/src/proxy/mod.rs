@@ -3,6 +3,7 @@ pub mod error;
 pub mod forwarder;
 pub mod handler_context;
 pub mod handlers;
+pub mod metrics;
 pub mod provider_router;
 pub mod providers;
 pub mod response;
