@@ -18,6 +18,7 @@ const BINARY_NAME: &str = "cc-switch";
 const CHECKSUMS_FILE_NAME: &str = "checksums.txt";
 const HTTP_REQUEST_TIMEOUT_SECS: u64 = 30;
 const MAX_RELEASE_ASSET_SIZE_BYTES: u64 = 100 * 1024 * 1024;
+const GITHUB_API_ACCEPT: &str = "application/vnd.github+json";
 const USER_AGENT: &str = concat!(
     env!("CARGO_PKG_NAME"),
     "-updater/",
@@ -31,6 +32,11 @@ pub struct UpdateCommand {
     pub version: Option<String>,
 }
 
+struct DownloadedAsset {
+    _temp_dir: TempDir,
+    archive_path: PathBuf,
+}
+
 #[derive(Debug, Deserialize)]
 struct ReleaseInfo {
     tag_name: String,
@@ -38,17 +44,12 @@ struct ReleaseInfo {
     assets: Vec<ReleaseAsset>,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize)]
 struct ReleaseAsset {
     name: String,
     browser_download_url: String,
     #[serde(default)]
     digest: Option<String>,
-}
-
-struct DownloadedAsset {
-    _temp_dir: TempDir,
-    archive_path: PathBuf,
 }
 
 pub fn execute(cmd: UpdateCommand) -> Result<(), AppError> {
@@ -82,13 +83,14 @@ async fn execute_async(cmd: UpdateCommand) -> Result<(), AppError> {
     }
 
     let expected_asset_name = release_asset_name()?;
-    let release = fetch_release_by_tag(&client, &target_tag).await?;
+    let release = fetch_release_by_tag(&client, REPO_URL, &target_tag).await?;
     let release_asset = select_release_asset(&release.assets, &target_tag, &expected_asset_name)
         .ok_or_else(|| {
             AppError::Message(format!(
                 "Release {target_tag} does not include expected asset '{expected_asset_name}' (or compatible tagged variant)."
             ))
         })?;
+    let checksum_url = release_checksums_url(REPO_URL, &target_tag)?;
     let download_url = release_asset.browser_download_url.as_str();
 
     println!(
@@ -103,8 +105,6 @@ async fn execute_async(cmd: UpdateCommand) -> Result<(), AppError> {
             info("Verifying checksum from release metadata digest.")
         );
     } else {
-        let checksum_url =
-            format!("{REPO_URL}/releases/download/{target_tag}/{CHECKSUMS_FILE_NAME}");
         println!("{}", info(&format!("Verifying checksum: {checksum_url}")));
     }
 
@@ -151,7 +151,7 @@ async fn resolve_target_tag(
 ) -> Result<String, AppError> {
     let tag = match version.map(str::trim).filter(|v| !v.is_empty()) {
         Some(version) => normalize_tag(version),
-        None => fetch_latest_release_tag(client).await?,
+        None => fetch_latest_release_tag(client, REPO_URL).await?,
     };
     validate_target_tag(&tag)?;
     Ok(tag)
@@ -192,30 +192,46 @@ fn normalize_tag(version: &str) -> String {
     }
 }
 
-async fn fetch_latest_release_tag(client: &reqwest::Client) -> Result<String, AppError> {
-    let api_url = release_api_url(REPO_URL, "latest")?;
-    let release = client
+async fn fetch_latest_release_tag(
+    client: &reqwest::Client,
+    repo_url: &str,
+) -> Result<String, AppError> {
+    let api_url = release_api_url(repo_url, "latest")?;
+    let response = client
         .get(api_url)
         .header(reqwest::header::USER_AGENT, USER_AGENT)
+        .header(reqwest::header::ACCEPT, GITHUB_API_ACCEPT)
         .send()
         .await
-        .map_err(|e| AppError::Message(format!("Failed to query latest release: {e}")))?
+        .map_err(|e| AppError::Message(format!("Failed to query latest release: {e}")))?;
+
+    if matches!(
+        response.status(),
+        reqwest::StatusCode::FORBIDDEN | reqwest::StatusCode::TOO_MANY_REQUESTS
+    ) {
+        return fetch_latest_release_tag_from_release_page(client, repo_url).await;
+    }
+
+    let release = response
         .error_for_status()
         .map_err(|e| AppError::Message(format!("Release API returned error: {e}")))?
         .json::<ReleaseInfo>()
         .await
         .map_err(|e| AppError::Message(format!("Failed to parse latest release response: {e}")))?;
+
     Ok(release.tag_name)
 }
 
 async fn fetch_release_by_tag(
     client: &reqwest::Client,
+    repo_url: &str,
     tag: &str,
 ) -> Result<ReleaseInfo, AppError> {
-    let api_url = release_api_url(REPO_URL, &format!("tags/{tag}"))?;
+    let api_url = release_api_url(repo_url, &format!("tags/{tag}"))?;
     client
         .get(api_url)
         .header(reqwest::header::USER_AGENT, USER_AGENT)
+        .header(reqwest::header::ACCEPT, GITHUB_API_ACCEPT)
         .send()
         .await
         .map_err(|e| AppError::Message(format!("Failed to query release {tag}: {e}")))?
@@ -224,6 +240,59 @@ async fn fetch_release_by_tag(
         .json::<ReleaseInfo>()
         .await
         .map_err(|e| AppError::Message(format!("Failed to parse release response for {tag}: {e}")))
+}
+
+async fn fetch_latest_release_tag_from_release_page(
+    client: &reqwest::Client,
+    repo_url: &str,
+) -> Result<String, AppError> {
+    let latest_url = release_page_url(repo_url, "latest")?;
+    let response = client
+        .get(latest_url)
+        .header(reqwest::header::USER_AGENT, USER_AGENT)
+        .send()
+        .await
+        .map_err(|e| AppError::Message(format!("Failed to query latest release page: {e}")))?
+        .error_for_status()
+        .map_err(|e| AppError::Message(format!("Latest release page returned error: {e}")))?;
+
+    extract_release_tag_from_url(response.url()).ok_or_else(|| {
+        AppError::Message(format!(
+            "Failed to resolve latest release tag from {}.",
+            response.url()
+        ))
+    })
+}
+
+fn release_page_url(repo_url: &str, suffix: &str) -> Result<Url, AppError> {
+    let repo_url = Url::parse(repo_url)
+        .map_err(|e| AppError::Message(format!("Invalid repository URL '{repo_url}': {e}")))?;
+
+    let path = repo_url.path().trim_matches('/');
+    let mut parts = path.split('/');
+    let owner = parts.next().filter(|s| !s.is_empty()).ok_or_else(|| {
+        AppError::Message(format!(
+            "Repository URL must include owner and repo: {repo_url}"
+        ))
+    })?;
+    let repo = parts.next().filter(|s| !s.is_empty()).ok_or_else(|| {
+        AppError::Message(format!(
+            "Repository URL must include owner and repo: {repo_url}"
+        ))
+    })?;
+    if parts.next().is_some() {
+        return Err(AppError::Message(format!(
+            "Repository URL must be in '<host>/<owner>/<repo>' format: {repo_url}"
+        )));
+    }
+    let repo = repo.strip_suffix(".git").unwrap_or(repo);
+
+    let mut release_url = repo_url.clone();
+    release_url.set_path(&format!("/{owner}/{repo}/releases/{suffix}"));
+    release_url.set_query(None);
+    release_url.set_fragment(None);
+
+    Ok(release_url)
 }
 
 fn release_api_url(repo_url: &str, suffix: &str) -> Result<Url, AppError> {
@@ -271,17 +340,16 @@ fn release_api_url(repo_url: &str, suffix: &str) -> Result<Url, AppError> {
     Ok(api_url)
 }
 
-fn select_release_asset<'a>(
-    assets: &'a [ReleaseAsset],
-    target_tag: &str,
-    expected_asset_name: &str,
-) -> Option<&'a ReleaseAsset> {
-    let tagged_variant = tagged_asset_name(target_tag, expected_asset_name);
+fn release_checksums_url(repo_url: &str, tag: &str) -> Result<Url, AppError> {
+    release_page_url(repo_url, &format!("download/{tag}/{CHECKSUMS_FILE_NAME}"))
+}
 
-    assets
-        .iter()
-        .find(|asset| asset.name == expected_asset_name)
-        .or_else(|| assets.iter().find(|asset| asset.name == tagged_variant))
+fn extract_release_tag_from_url(url: &Url) -> Option<String> {
+    let segments = url.path_segments()?.collect::<Vec<_>>();
+    segments
+        .windows(3)
+        .find(|window| window[0] == "releases" && window[1] == "tag")
+        .map(|window| window[2].to_string())
 }
 
 fn tagged_asset_name(tag: &str, asset_name: &str) -> String {
@@ -289,6 +357,26 @@ fn tagged_asset_name(tag: &str, asset_name: &str) -> String {
         return format!("cc-switch-cli-{tag}-{suffix}");
     }
     asset_name.to_string()
+}
+
+fn release_asset_names(tag: &str, asset_name: &str) -> Vec<String> {
+    let tagged = tagged_asset_name(tag, asset_name);
+    if tagged == asset_name {
+        vec![asset_name.to_string()]
+    } else {
+        vec![asset_name.to_string(), tagged]
+    }
+}
+
+fn select_release_asset<'a>(
+    assets: &'a [ReleaseAsset],
+    target_tag: &str,
+    expected_asset_name: &str,
+) -> Option<&'a ReleaseAsset> {
+    let expected_names = release_asset_names(target_tag, expected_asset_name);
+    expected_names
+        .iter()
+        .find_map(|expected_name| assets.iter().find(|asset| asset.name == *expected_name))
 }
 
 fn release_asset_name() -> Result<String, AppError> {
@@ -316,12 +404,14 @@ async fn download_release_asset(
     asset_name: &str,
     on_progress: Option<&dyn Fn(u64, Option<u64>)>,
 ) -> Result<DownloadedAsset, AppError> {
-    let mut response = client
+    let response = client
         .get(url)
         .header(reqwest::header::USER_AGENT, USER_AGENT)
         .send()
         .await
-        .map_err(|e| AppError::Message(format!("Failed to download release asset: {e}")))?
+        .map_err(|e| AppError::Message(format!("Failed to download release asset: {e}")))?;
+
+    let mut response = response
         .error_for_status()
         .map_err(|e| AppError::Message(format!("Release asset request failed: {e}")))?;
     let content_length = response.content_length();
@@ -391,7 +481,6 @@ async fn verify_asset_checksum(
     release_asset: &ReleaseAsset,
 ) -> Result<(), AppError> {
     let actual = compute_sha256_hex(archive_path)?;
-
     let expected = if let Some(expected) = release_asset
         .digest
         .as_deref()
@@ -399,9 +488,8 @@ async fn verify_asset_checksum(
     {
         expected
     } else {
-        let checksum_url =
-            format!("{REPO_URL}/releases/download/{target_tag}/{CHECKSUMS_FILE_NAME}");
-        let checksum_content = download_text(client, &checksum_url).await?;
+        let checksum_url = release_checksums_url(REPO_URL, target_tag)?;
+        let checksum_content = download_text(client, checksum_url.as_str()).await?;
         parse_checksum_for_asset(&checksum_content, release_asset.name.as_str())?
     };
 
@@ -441,12 +529,14 @@ fn should_skip_implicit_downgrade(
 }
 
 async fn download_text(client: &reqwest::Client, url: &str) -> Result<String, AppError> {
-    client
+    let response = client
         .get(url)
         .header(reqwest::header::USER_AGENT, USER_AGENT)
         .send()
         .await
-        .map_err(|e| AppError::Message(format!("Failed to download checksum file: {e}")))?
+        .map_err(|e| AppError::Message(format!("Failed to download checksum file: {e}")))?;
+
+    response
         .error_for_status()
         .map_err(|e| AppError::Message(format!("Checksum file request failed: {e}")))?
         .text()
@@ -690,19 +780,17 @@ pub(crate) async fn download_and_apply(
 ) -> Result<(), AppError> {
     let client = create_http_client()?;
     let expected_asset_name = release_asset_name()?;
-    let release = fetch_release_by_tag(&client, target_tag).await?;
+    let release = fetch_release_by_tag(&client, REPO_URL, target_tag).await?;
     let release_asset = select_release_asset(&release.assets, target_tag, &expected_asset_name)
         .ok_or_else(|| {
             AppError::Message(format!(
                 "Release {target_tag} does not include expected asset '{expected_asset_name}' (or compatible tagged variant)."
             ))
         })?;
-    let download_url = release_asset.browser_download_url.as_str();
-
     let downloaded_asset = download_release_asset(
         &client,
-        download_url,
-        &release_asset.name,
+        release_asset.browser_download_url.as_str(),
+        release_asset.name.as_str(),
         Some(&on_progress),
     )
     .await?;
@@ -722,6 +810,8 @@ pub(crate) async fn download_and_apply(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::{response::Redirect, routing::get, Router};
+    use tokio::net::TcpListener;
 
     #[test]
     fn normalize_tag_adds_prefix_when_missing() {
@@ -770,6 +860,41 @@ mod tests {
     }
 
     #[test]
+    fn release_page_url_for_github_com() {
+        let url = release_page_url("https://github.com/saladday/cc-switch-cli", "latest")
+            .expect("release page url should be built");
+        assert_eq!(
+            url.as_str(),
+            "https://github.com/saladday/cc-switch-cli/releases/latest"
+        );
+    }
+
+    #[test]
+    fn release_page_url_for_github_enterprise() {
+        let url = release_page_url(
+            "https://github.enterprise.local/team/cc-switch-cli.git",
+            "tag/v4.6.2",
+        )
+        .expect("release page url should be built");
+        assert_eq!(
+            url.as_str(),
+            "https://github.enterprise.local/team/cc-switch-cli/releases/tag/v4.6.2"
+        );
+    }
+
+    #[test]
+    fn release_asset_names_prefer_plain_then_tagged_variant() {
+        let names = release_asset_names("v4.6.2", "cc-switch-cli-linux-x64-musl.tar.gz");
+        assert_eq!(
+            names,
+            vec![
+                "cc-switch-cli-linux-x64-musl.tar.gz".to_string(),
+                "cc-switch-cli-v4.6.2-linux-x64-musl.tar.gz".to_string(),
+            ]
+        );
+    }
+
+    #[test]
     fn release_api_url_for_github_com() {
         let url = release_api_url("https://github.com/saladday/cc-switch-cli", "latest")
             .expect("api url should be built");
@@ -780,16 +905,79 @@ mod tests {
     }
 
     #[test]
-    fn release_api_url_for_github_enterprise() {
-        let url = release_api_url(
-            "https://github.enterprise.local/team/cc-switch-cli.git",
-            "tags/v4.6.2",
-        )
-        .expect("api url should be built");
-        assert_eq!(
-            url.as_str(),
-            "https://github.enterprise.local/api/v3/repos/team/cc-switch-cli/releases/tags/v4.6.2"
-        );
+    fn extract_release_tag_from_url_reads_release_tag_page() {
+        let url = Url::parse("https://github.com/saladday/cc-switch-cli/releases/tag/v4.6.2")
+            .expect("url should parse");
+        let tag = extract_release_tag_from_url(&url).expect("tag should be extracted");
+        assert_eq!(tag, "v4.6.2");
+    }
+
+    #[tokio::test]
+    async fn fetch_latest_release_tag_prefers_release_api_when_available() {
+        let app = Router::new()
+            .route(
+                "/api/v3/repos/team/cc-switch-cli/releases/latest",
+                get(|| async { axum::Json(serde_json::json!({ "tag_name": "v4.6.3" })) }),
+            )
+            .route(
+                "/team/cc-switch-cli/releases/latest",
+                get(|| async { Redirect::temporary("/team/cc-switch-cli/releases/tag/v4.6.2") }),
+            )
+            .route(
+                "/team/cc-switch-cli/releases/tag/v4.6.2",
+                get(|| async { "ok" }),
+            );
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let addr = listener.local_addr().expect("local addr should resolve");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("server should run");
+        });
+
+        let client = create_http_client().expect("http client should initialize");
+        let repo_url = format!("http://{addr}/team/cc-switch-cli");
+        let tag = fetch_latest_release_tag(&client, &repo_url)
+            .await
+            .expect("latest tag should resolve from release api");
+        assert_eq!(tag, "v4.6.3");
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn fetch_latest_release_tag_falls_back_to_release_page_after_rate_limit() {
+        let app = Router::new()
+            .route(
+                "/team/cc-switch-cli/releases/latest",
+                get(|| async { Redirect::temporary("/team/cc-switch-cli/releases/tag/v4.6.2") }),
+            )
+            .route(
+                "/team/cc-switch-cli/releases/tag/v4.6.2",
+                get(|| async { "ok" }),
+            )
+            .route(
+                "/api/v3/repos/team/cc-switch-cli/releases/latest",
+                get(|| async { axum::http::StatusCode::FORBIDDEN }),
+            );
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let addr = listener.local_addr().expect("local addr should resolve");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("server should run");
+        });
+
+        let client = create_http_client().expect("http client should initialize");
+        let repo_url = format!("http://{addr}/team/cc-switch-cli");
+        let tag = fetch_latest_release_tag(&client, &repo_url)
+            .await
+            .expect("latest tag should resolve from redirect");
+        assert_eq!(tag, "v4.6.2");
+
+        server.abort();
     }
 
     #[test]

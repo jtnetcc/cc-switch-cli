@@ -100,7 +100,7 @@ download() {
 
 extract() {
   info "Extracting archive"
-  tar -xzf "${TMP_DIR}/${ASSET_NAME}" -C "${TMP_DIR}"
+  LC_ALL=C tar -xzf "${TMP_DIR}/${ASSET_NAME}" -C "${TMP_DIR}"
 
   if [[ ! -f "${TMP_DIR}/${BIN_NAME}" ]]; then
     err "Binary '${BIN_NAME}' not found in archive."
