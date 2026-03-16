@@ -46,6 +46,51 @@ impl ProviderService {
         Ok(provider)
     }
 
+    pub(super) fn strip_common_gemini_config_from_provider(
+        provider: &mut Provider,
+        common_config_snippet: Option<&str>,
+    ) -> Result<(), AppError> {
+        let apply_common_config = provider
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.apply_common_config)
+            .unwrap_or(true);
+        if !apply_common_config {
+            return Ok(());
+        }
+
+        let Some(snippet) = common_config_snippet.map(str::trim) else {
+            return Ok(());
+        };
+        if snippet.is_empty() {
+            return Ok(());
+        }
+
+        let common = Self::parse_common_gemini_config_snippet(snippet)?;
+        strip_common_values(&mut provider.settings_config, &common);
+        Ok(())
+    }
+
+    pub(super) fn migrate_gemini_common_config_snippet(
+        config: &mut MultiAppConfig,
+        old_snippet: &str,
+    ) -> Result<(), AppError> {
+        let old_snippet = old_snippet.trim();
+        if old_snippet.is_empty() {
+            return Ok(());
+        }
+
+        let Some(manager) = config.get_manager_mut(&AppType::Gemini) else {
+            return Ok(());
+        };
+
+        for provider in manager.providers.values_mut() {
+            Self::strip_common_gemini_config_from_provider(provider, Some(old_snippet))?;
+        }
+
+        Ok(())
+    }
+
     pub(super) fn backfill_gemini_current(
         config: &mut MultiAppConfig,
         next_provider: &str,
@@ -67,6 +112,14 @@ impl ProviderService {
             return Ok(());
         }
 
+        let current_provider = config
+            .get_manager(&AppType::Gemini)
+            .and_then(|manager| manager.providers.get(&current_id))
+            .cloned();
+        let Some(current_provider) = current_provider else {
+            return Ok(());
+        };
+
         let env_map = read_gemini_env()?;
         let mut live = env_to_json(&env_map);
 
@@ -79,14 +132,12 @@ impl ProviderService {
         if let Some(obj) = live.as_object_mut() {
             obj.insert("config".to_string(), config_value);
         }
-
-        if let Some(snippet) = config.common_config_snippets.gemini.as_deref() {
-            let snippet = snippet.trim();
-            if !snippet.is_empty() {
-                let common = Self::parse_common_gemini_config_snippet(snippet)?;
-                strip_common_values(&mut live, &common);
-            }
-        }
+        let live = Self::normalize_settings_config_for_storage(
+            &AppType::Gemini,
+            &current_provider,
+            live,
+            config.common_config_snippets.gemini.as_deref(),
+        )?;
 
         if let Some(manager) = config.get_manager_mut(&AppType::Gemini) {
             if let Some(current) = manager.providers.get_mut(&current_id) {

@@ -117,8 +117,10 @@ pub(super) fn strip_codex_common_config_from_full_text(
         return Ok(config_text.to_string());
     }
 
-    let common_table: toml::Table = toml::from_str(common_snippet).unwrap_or_default();
-    if common_table.is_empty() {
+    let common_doc = common_snippet
+        .parse::<toml_edit::DocumentMut>()
+        .map_err(|e| AppError::Config(format!("Common config TOML parse error: {e}")))?;
+    if common_doc.as_table().is_empty() {
         return Ok(config_text.to_string());
     }
 
@@ -126,12 +128,14 @@ pub(super) fn strip_codex_common_config_from_full_text(
         .parse::<toml_edit::DocumentMut>()
         .map_err(|e| AppError::Config(format!("TOML parse error: {e}")))?;
 
-    for (key, _) in &common_table {
+    for (key, common_item) in common_doc.as_table().iter() {
         // Strip all common keys EXCEPT provider-identity keys.
-        match key.as_str() {
+        match key {
             "model" | "model_provider" | "model_providers" => continue,
             _ => {
-                doc.as_table_mut().remove(key);
+                let mut single_key_table = toml_edit::Table::new();
+                single_key_table.insert(key, common_item.clone());
+                ProviderService::strip_toml_tables(doc.as_table_mut(), &single_key_table);
             }
         }
     }

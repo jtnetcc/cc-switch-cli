@@ -11,6 +11,7 @@ mod provider_templates;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use provider_json::strip_common_config_from_settings;
 pub use provider_json::strip_provider_internal_fields;
 pub(crate) use provider_state::resolve_provider_id_for_submit;
 

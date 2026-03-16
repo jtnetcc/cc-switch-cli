@@ -77,17 +77,7 @@ impl App {
             return Action::None;
         };
 
-        let provider_json = if matches!(provider.app_type, AppType::Codex) {
-            provider.to_provider_json_value()
-        } else {
-            match provider.to_provider_json_value_with_common_config(&data.config.common_snippet) {
-                Ok(value) => value,
-                Err(err) => {
-                    self.push_toast(err, ToastKind::Error);
-                    return Action::None;
-                }
-            }
-        };
+        let provider_json = provider.to_provider_json_value();
         let content =
             serde_json::to_string_pretty(&provider_json).unwrap_or_else(|_| "{}".to_string());
 

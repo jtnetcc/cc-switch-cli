@@ -20,6 +20,51 @@ fn sanitize_provider_name(name: &str) -> String {
         .to_lowercase()
 }
 
+fn codex_provider(
+    id: &str,
+    name: &str,
+    api_key: &str,
+    model_provider: &str,
+    base_url: &str,
+) -> Provider {
+    Provider::with_id(
+        id.to_string(),
+        name.to_string(),
+        json!({
+            "auth": { "OPENAI_API_KEY": api_key },
+            "config": format!(
+                "model_provider = \"{model_provider}\"\nmodel = \"gpt-5.2-codex\"\n\n[model_providers.{model_provider}]\nbase_url = \"{base_url}\"\nwire_api = \"responses\"\nrequires_openai_auth = true\n"
+            )
+        }),
+        None,
+    )
+}
+
+fn insert_codex_managed_mcp(config: &mut MultiAppConfig) {
+    config.mcp.servers = Some(HashMap::new());
+    config.mcp.servers.as_mut().unwrap().insert(
+        "echo-server".into(),
+        McpServer {
+            id: "echo-server".to_string(),
+            name: "Echo Server".to_string(),
+            server: json!({
+                "type": "stdio",
+                "command": "echo"
+            }),
+            apps: McpApps {
+                claude: false,
+                codex: true,
+                gemini: false,
+                opencode: false,
+            },
+            description: None,
+            homepage: None,
+            docs: None,
+            tags: Vec::new(),
+        },
+    );
+}
+
 #[test]
 fn provider_service_switch_codex_updates_live_and_config() {
     let _guard = lock_test_mutex();
@@ -147,6 +192,468 @@ command = "echo"
     assert_eq!(
         legacy_auth_value, "legacy-key",
         "previous provider should be backfilled with live auth"
+    );
+}
+
+#[test]
+fn update_current_codex_provider_preserves_managed_mcp_servers() {
+    let _guard = lock_test_mutex();
+    reset_test_fs();
+    let _home = ensure_test_home();
+
+    let common_snippet = "disable_response_storage = true";
+    let live_auth = json!({ "OPENAI_API_KEY": "live-key" });
+    let live_config = r#"disable_response_storage = true
+model_provider = "current"
+model = "gpt-5.2-codex"
+
+[model_providers.current]
+base_url = "https://api.before.example/v1"
+wire_api = "responses"
+requires_openai_auth = true
+
+[mcp_servers.echo-server]
+type = "stdio"
+command = "echo"
+"#;
+    write_codex_live_atomic(&live_auth, Some(live_config))
+        .expect("seed existing codex live config");
+
+    let mut config = MultiAppConfig::default();
+    config.common_config_snippets.codex = Some(common_snippet.to_string());
+    {
+        let manager = config
+            .get_manager_mut(&AppType::Codex)
+            .expect("codex manager");
+        manager.current = "current-provider".to_string();
+        manager.providers.insert(
+            "current-provider".to_string(),
+            codex_provider(
+                "current-provider",
+                "Current",
+                "stored-key",
+                "current",
+                "https://api.before.example/v1",
+            ),
+        );
+    }
+    insert_codex_managed_mcp(&mut config);
+
+    let state = state_from_config(config);
+
+    ProviderService::update(
+        &state,
+        AppType::Codex,
+        codex_provider(
+            "current-provider",
+            "Current",
+            "updated-key",
+            "current",
+            "https://api.after.example/v1",
+        ),
+    )
+    .expect("update current provider should succeed");
+
+    let config_text =
+        std::fs::read_to_string(cc_switch_lib::get_codex_config_path()).expect("read config.toml");
+    assert!(
+        config_text.contains("disable_response_storage = true"),
+        "common snippet should still be present after update"
+    );
+    assert!(
+        config_text.contains("[mcp_servers.echo-server]"),
+        "managed MCP table should remain after updating the current provider"
+    );
+    assert!(
+        config_text.contains("command = \"echo\""),
+        "managed MCP payload should remain after updating the current provider"
+    );
+}
+
+#[test]
+fn add_current_codex_provider_preserves_managed_mcp_servers() {
+    let _guard = lock_test_mutex();
+    reset_test_fs();
+    let _home = ensure_test_home();
+
+    let common_snippet = "disable_response_storage = true";
+    let live_auth = json!({ "OPENAI_API_KEY": "live-key" });
+    let live_config = r#"disable_response_storage = true
+model_provider = "legacy"
+model = "gpt-5.2-codex"
+
+[model_providers.legacy]
+base_url = "https://api.legacy.example/v1"
+wire_api = "responses"
+requires_openai_auth = true
+
+[mcp_servers.echo-server]
+type = "stdio"
+command = "echo"
+"#;
+    write_codex_live_atomic(&live_auth, Some(live_config))
+        .expect("seed existing codex live config");
+
+    let mut config = MultiAppConfig::default();
+    config.common_config_snippets.codex = Some(common_snippet.to_string());
+    insert_codex_managed_mcp(&mut config);
+
+    let state = state_from_config(config);
+
+    ProviderService::add(
+        &state,
+        AppType::Codex,
+        codex_provider(
+            "new-provider",
+            "New",
+            "fresh-key",
+            "new",
+            "https://api.new.example/v1",
+        ),
+    )
+    .expect("add current provider should succeed");
+
+    let config_text =
+        std::fs::read_to_string(cc_switch_lib::get_codex_config_path()).expect("read config.toml");
+    assert!(
+        config_text.contains("disable_response_storage = true"),
+        "common snippet should still be present after add"
+    );
+    assert!(
+        config_text.contains("[mcp_servers.echo-server]"),
+        "managed MCP table should remain after adding the current provider"
+    );
+    assert!(
+        config_text.contains("command = \"echo\""),
+        "managed MCP payload should remain after adding the current provider"
+    );
+}
+
+#[test]
+fn update_codex_provider_self_heals_dangling_current_and_rewrites_live() {
+    let _guard = lock_test_mutex();
+    reset_test_fs();
+    let _home = ensure_test_home();
+
+    let common_snippet = "disable_response_storage = true";
+    let live_auth = json!({ "OPENAI_API_KEY": "live-key" });
+    let live_config = r#"disable_response_storage = true
+model_provider = "stale"
+model = "gpt-5.2-codex"
+
+[model_providers.stale]
+base_url = "https://api.stale.example/v1"
+wire_api = "responses"
+requires_openai_auth = true
+
+[mcp_servers.echo-server]
+type = "stdio"
+command = "echo"
+"#;
+    write_codex_live_atomic(&live_auth, Some(live_config))
+        .expect("seed existing codex live config");
+
+    let mut config = MultiAppConfig::default();
+    config.common_config_snippets.codex = Some(common_snippet.to_string());
+    {
+        let manager = config
+            .get_manager_mut(&AppType::Codex)
+            .expect("codex manager");
+        manager.current = "missing-provider".to_string();
+        manager.providers.insert(
+            "current-provider".to_string(),
+            codex_provider(
+                "current-provider",
+                "Current",
+                "stored-key",
+                "current",
+                "https://api.before.example/v1",
+            ),
+        );
+    }
+    insert_codex_managed_mcp(&mut config);
+
+    let state = state_from_config(config);
+
+    ProviderService::update(
+        &state,
+        AppType::Codex,
+        codex_provider(
+            "current-provider",
+            "Current",
+            "updated-key",
+            "current",
+            "https://api.after.example/v1",
+        ),
+    )
+    .expect("update should succeed after self-healing dangling current");
+
+    let config_text =
+        std::fs::read_to_string(cc_switch_lib::get_codex_config_path()).expect("read config.toml");
+    assert!(
+        config_text.contains("base_url = \"https://api.after.example/v1\""),
+        "live config should be rewritten from the healed current provider"
+    );
+    assert!(
+        config_text.contains("[mcp_servers.echo-server]"),
+        "managed MCP table should remain after rewriting the healed current provider"
+    );
+
+    let guard = state.config.read().expect("read config after update");
+    let manager = guard
+        .get_manager(&AppType::Codex)
+        .expect("codex manager after update");
+    assert_eq!(
+        manager.current, "current-provider",
+        "update should self-heal dangling current before deciding post-commit actions"
+    );
+}
+
+#[test]
+fn add_first_codex_provider_self_heals_dangling_current_and_rewrites_live() {
+    let _guard = lock_test_mutex();
+    reset_test_fs();
+    let _home = ensure_test_home();
+
+    let common_snippet = "disable_response_storage = true";
+    let live_auth = json!({ "OPENAI_API_KEY": "live-key" });
+    let live_config = r#"disable_response_storage = true
+model_provider = "stale"
+model = "gpt-5.2-codex"
+
+[model_providers.stale]
+base_url = "https://api.stale.example/v1"
+wire_api = "responses"
+requires_openai_auth = true
+
+[mcp_servers.echo-server]
+type = "stdio"
+command = "echo"
+"#;
+    write_codex_live_atomic(&live_auth, Some(live_config))
+        .expect("seed existing codex live config");
+
+    let mut config = MultiAppConfig::default();
+    config.common_config_snippets.codex = Some(common_snippet.to_string());
+    {
+        let manager = config
+            .get_manager_mut(&AppType::Codex)
+            .expect("codex manager");
+        manager.current = "missing-provider".to_string();
+    }
+    insert_codex_managed_mcp(&mut config);
+
+    let state = state_from_config(config);
+
+    ProviderService::add(
+        &state,
+        AppType::Codex,
+        codex_provider(
+            "new-provider",
+            "New",
+            "fresh-key",
+            "new",
+            "https://api.new.example/v1",
+        ),
+    )
+    .expect("add should succeed after self-healing dangling current");
+
+    let config_text =
+        std::fs::read_to_string(cc_switch_lib::get_codex_config_path()).expect("read config.toml");
+    assert!(
+        config_text.contains("base_url = \"https://api.new.example/v1\""),
+        "live config should be rewritten for the first provider after self-healing dangling current"
+    );
+    assert!(
+        config_text.contains("[mcp_servers.echo-server]"),
+        "managed MCP table should remain after adding the healed current provider"
+    );
+
+    let guard = state.config.read().expect("read config after add");
+    let manager = guard
+        .get_manager(&AppType::Codex)
+        .expect("codex manager after add");
+    assert_eq!(
+        manager.current, "new-provider",
+        "first add should self-heal dangling current before deciding post-commit actions"
+    );
+}
+
+#[test]
+fn update_non_current_codex_provider_self_heals_current_and_rewrites_live() {
+    let _guard = lock_test_mutex();
+    reset_test_fs();
+    let _home = ensure_test_home();
+
+    let common_snippet = "disable_response_storage = true";
+    let live_auth = json!({ "OPENAI_API_KEY": "live-key" });
+    let live_config = r#"disable_response_storage = true
+model_provider = "stale"
+model = "gpt-5.2-codex"
+
+[model_providers.stale]
+base_url = "https://api.stale.example/v1"
+wire_api = "responses"
+requires_openai_auth = true
+
+[mcp_servers.echo-server]
+type = "stdio"
+command = "echo"
+"#;
+    write_codex_live_atomic(&live_auth, Some(live_config))
+        .expect("seed existing codex live config");
+
+    let mut config = MultiAppConfig::default();
+    config.common_config_snippets.codex = Some(common_snippet.to_string());
+    {
+        let manager = config
+            .get_manager_mut(&AppType::Codex)
+            .expect("codex manager");
+        manager.current = "missing-provider".to_string();
+        manager.providers.insert(
+            "current-provider".to_string(),
+            codex_provider(
+                "current-provider",
+                "Current",
+                "current",
+                "current",
+                "https://api.current.example/v1",
+            ),
+        );
+        manager.providers.insert(
+            "other-provider".to_string(),
+            codex_provider(
+                "other-provider",
+                "Other",
+                "other",
+                "other",
+                "https://api.other-before.example/v1",
+            ),
+        );
+    }
+    insert_codex_managed_mcp(&mut config);
+
+    let state = state_from_config(config);
+
+    ProviderService::update(
+        &state,
+        AppType::Codex,
+        codex_provider(
+            "other-provider",
+            "Other",
+            "other-updated",
+            "other",
+            "https://api.other-after.example/v1",
+        ),
+    )
+    .expect("update non-current provider should succeed after self-healing dangling current");
+
+    let config_text =
+        std::fs::read_to_string(cc_switch_lib::get_codex_config_path()).expect("read config.toml");
+    assert!(
+        config_text.contains("base_url = \"https://api.current.example/v1\""),
+        "live config should be rewritten from the healed current provider rather than the updated non-current provider"
+    );
+    assert!(
+        !config_text.contains("https://api.other-after.example/v1"),
+        "live config should not be rewritten from the updated non-current provider"
+    );
+    assert!(
+        config_text.contains("[mcp_servers.echo-server]"),
+        "managed MCP table should remain after rewriting healed current provider"
+    );
+
+    let guard = state.config.read().expect("read config after update");
+    let manager = guard
+        .get_manager(&AppType::Codex)
+        .expect("codex manager after update");
+    assert_eq!(
+        manager.current, "current-provider",
+        "update should persist healed current even when editing another provider"
+    );
+}
+
+#[test]
+fn add_non_current_codex_provider_self_heals_current_and_rewrites_live() {
+    let _guard = lock_test_mutex();
+    reset_test_fs();
+    let _home = ensure_test_home();
+
+    let common_snippet = "disable_response_storage = true";
+    let live_auth = json!({ "OPENAI_API_KEY": "live-key" });
+    let live_config = r#"disable_response_storage = true
+model_provider = "stale"
+model = "gpt-5.2-codex"
+
+[model_providers.stale]
+base_url = "https://api.stale.example/v1"
+wire_api = "responses"
+requires_openai_auth = true
+
+[mcp_servers.echo-server]
+type = "stdio"
+command = "echo"
+"#;
+    write_codex_live_atomic(&live_auth, Some(live_config))
+        .expect("seed existing codex live config");
+
+    let mut config = MultiAppConfig::default();
+    config.common_config_snippets.codex = Some(common_snippet.to_string());
+    {
+        let manager = config
+            .get_manager_mut(&AppType::Codex)
+            .expect("codex manager");
+        manager.current = "missing-provider".to_string();
+        manager.providers.insert(
+            "current-provider".to_string(),
+            codex_provider(
+                "current-provider",
+                "Current",
+                "current",
+                "current",
+                "https://api.current.example/v1",
+            ),
+        );
+    }
+    insert_codex_managed_mcp(&mut config);
+
+    let state = state_from_config(config);
+
+    ProviderService::add(
+        &state,
+        AppType::Codex,
+        codex_provider(
+            "new-provider",
+            "New",
+            "fresh-key",
+            "new",
+            "https://api.new.example/v1",
+        ),
+    )
+    .expect("add non-current provider should succeed after self-healing dangling current");
+
+    let config_text =
+        std::fs::read_to_string(cc_switch_lib::get_codex_config_path()).expect("read config.toml");
+    assert!(
+        config_text.contains("base_url = \"https://api.current.example/v1\""),
+        "live config should be rewritten from the healed current provider rather than the added non-current provider"
+    );
+    assert!(
+        !config_text.contains("https://api.new.example/v1"),
+        "live config should not be rewritten from the added non-current provider"
+    );
+    assert!(
+        config_text.contains("[mcp_servers.echo-server]"),
+        "managed MCP table should remain after rewriting healed current provider"
+    );
+
+    let guard = state.config.read().expect("read config after add");
+    let manager = guard
+        .get_manager(&AppType::Codex)
+        .expect("codex manager after add");
+    assert_eq!(
+        manager.current, "current-provider",
+        "add should persist healed current even when inserting another provider"
     );
 }
 

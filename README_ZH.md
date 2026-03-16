@@ -313,9 +313,10 @@ cc-switch config path                # 显示配置文件路径
 cc-switch config validate            # 验证配置文件
 
 # 通用配置片段（跨所有供应商共享设置）
+# 会在适用时尝试刷新 live config（`--apply` 仅保留为兼容参数）
 cc-switch --app claude config common show
-cc-switch --app claude config common set --json '{"env":{"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC":1},"includeCoAuthoredBy":false}' --apply
-cc-switch --app claude config common clear --apply
+cc-switch --app claude config common set --snippet '{"env":{"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC":1},"includeCoAuthoredBy":false}'
+cc-switch --app claude config common clear
 
 # 备份
 cc-switch config backup              # 创建备份（自动命名）

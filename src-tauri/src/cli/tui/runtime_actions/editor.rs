@@ -2,6 +2,7 @@ use serde_json::{json, Value};
 
 use crate::app_config::{AppType, McpServer};
 use crate::cli::i18n::texts;
+use crate::cli::tui::form::strip_common_config_from_settings;
 use crate::error::AppError;
 use crate::provider::Provider;
 use crate::services::{McpService, PromptService, ProviderService};
@@ -80,7 +81,7 @@ fn submit_provider_form_apply_json(
     ctx: &mut RuntimeActionContext<'_>,
     content: String,
 ) -> Result<(), AppError> {
-    let settings_value: Value = match serde_json::from_str(&content) {
+    let mut settings_value: Value = match serde_json::from_str(&content) {
         Ok(value) => value,
         Err(e) => {
             ctx.app.push_toast(
@@ -99,9 +100,20 @@ fn submit_provider_form_apply_json(
 
     let provider_value = match ctx.app.form.as_ref() {
         Some(FormState::ProviderAdd(form)) => {
+            if form.include_common_config {
+                if let Err(err) = strip_common_config_from_settings(
+                    &form.app_type,
+                    &mut settings_value,
+                    &ctx.data.config.common_snippet,
+                ) {
+                    ctx.app.push_toast(err, ToastKind::Error);
+                    return Ok(());
+                }
+            }
+
             let mut provider_value = form.to_provider_json_value();
             if let Some(obj) = provider_value.as_object_mut() {
-                obj.insert("settingsConfig".to_string(), settings_value);
+                obj.insert("settingsConfig".to_string(), settings_value.clone());
             }
             Some(provider_value)
         }
@@ -468,18 +480,12 @@ fn submit_config_common_snippet(
     };
 
     let state = load_state()?;
-    {
-        let mut cfg = match state.config.write().map_err(AppError::from) {
-            Ok(cfg) => cfg,
-            Err(err) => {
-                ctx.app.push_toast(err.to_string(), ToastKind::Error);
-                return Ok(());
-            }
-        };
-        cfg.common_config_snippets
-            .set(&app_type, next_snippet.clone());
-    }
-    if let Err(err) = state.save() {
+    let service_result = if let Some(snippet) = next_snippet.clone() {
+        ProviderService::set_common_config_snippet(&state, app_type.clone(), Some(snippet))
+    } else {
+        ProviderService::clear_common_config_snippet(&state, app_type.clone())
+    };
+    if let Err(err) = service_result {
         ctx.app.push_toast(err.to_string(), ToastKind::Error);
         return Ok(());
     }
@@ -703,5 +709,97 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    #[serial]
+    fn submit_provider_form_apply_json_keeps_common_snippet_out_of_raw_submit_payload() {
+        let (
+            _temp_home,
+            _env,
+            mut terminal,
+            mut app,
+            mut data,
+            mut proxy_loading,
+            mut webdav_loading,
+            mut update_check,
+        ) = runtime_ctx(AppType::Claude);
+
+        data.config.common_snippet = r#"{
+            "alwaysThinkingEnabled": false,
+            "env": {
+                "COMMON_FLAG": "1"
+            }
+        }"#
+        .to_string();
+
+        let mut form = crate::cli::tui::form::ProviderAddFormState::new(AppType::Claude);
+        form.id.set("p1");
+        form.name.set("Provider One");
+        form.include_common_config = true;
+        form.claude_base_url.set("https://provider.example");
+        app.form = Some(FormState::ProviderAdd(form));
+
+        let mut ctx = RuntimeActionContext {
+            terminal: &mut terminal,
+            app: &mut app,
+            data: &mut data,
+            speedtest_req_tx: None,
+            stream_check_req_tx: None,
+            skills_req_tx: None,
+            proxy_req_tx: None,
+            proxy_loading: &mut proxy_loading,
+            local_env_req_tx: None,
+            webdav_req_tx: None,
+            webdav_loading: &mut webdav_loading,
+            update_req_tx: None,
+            update_check: &mut update_check,
+            model_fetch_req_tx: None,
+        };
+
+        submit_provider_form_apply_json(
+            &mut ctx,
+            r#"{
+                "alwaysThinkingEnabled": false,
+                "env": {
+                    "ANTHROPIC_BASE_URL": "https://edited.example",
+                    "COMMON_FLAG": "1",
+                    "EXTRA_FIELD": "kept"
+                }
+            }"#
+            .to_string(),
+        )
+        .expect("apply should succeed");
+
+        let FormState::ProviderAdd(form) = ctx
+            .app
+            .form
+            .as_ref()
+            .expect("provider form should remain open")
+        else {
+            panic!("expected provider form");
+        };
+        let settings = form
+            .to_provider_json_value()
+            .get("settingsConfig")
+            .cloned()
+            .expect("settingsConfig should exist");
+
+        assert!(
+            settings.get("alwaysThinkingEnabled").is_none(),
+            "applying preview JSON should not persist top-level common snippet keys into raw form payload"
+        );
+        assert!(
+            settings["env"].get("COMMON_FLAG").is_none(),
+            "applying preview JSON should not persist nested common snippet keys into raw form payload"
+        );
+        assert_eq!(
+            settings["env"]["ANTHROPIC_BASE_URL"], "https://edited.example",
+            "provider-specific edits from the preview editor should still be preserved"
+        );
+        assert_eq!(
+            settings["env"]["EXTRA_FIELD"], "kept",
+            "non-common keys introduced in the preview editor should still be preserved"
+        );
     }
 }

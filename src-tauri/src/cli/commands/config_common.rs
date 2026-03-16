@@ -6,29 +6,38 @@ use crate::app_config::AppType;
 use crate::cli::i18n::texts;
 use crate::cli::ui::{highlight, info, success};
 use crate::error::AppError;
+use crate::services::ProviderService;
 use crate::store::AppState;
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum CommonConfigCommand {
     /// Show current common config snippet
     Show,
-    /// Set common config snippet (JSON object)
+    /// Set common config snippet for the selected app
+    #[command(
+        after_long_help = "Compatibility:\n  --json <SNIPPET>  Legacy alias for --snippet <SNIPPET>."
+    )]
     Set {
-        /// JSON object string (e.g. '{"env":{"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC":1}}')
-        #[arg(long, conflicts_with = "file")]
-        json: Option<String>,
+        /// Inline snippet text (Claude/Gemini/OpenCode: JSON object; Codex: TOML)
+        #[arg(
+            long = "snippet",
+            alias = "json",
+            value_name = "SNIPPET",
+            conflicts_with = "file"
+        )]
+        snippet: Option<String>,
 
-        /// Read JSON object from file
-        #[arg(long, conflicts_with = "json")]
+        /// Read snippet text from file using the selected app's format rules
+        #[arg(long, conflicts_with = "snippet")]
         file: Option<std::path::PathBuf>,
 
-        /// Apply to current provider immediately
+        /// Compatibility flag; changes already try to refresh the current live config when applicable
         #[arg(long)]
         apply: bool,
     },
-    /// Clear common config snippet
+    /// Clear common config snippet for the selected app
     Clear {
-        /// Apply to current provider immediately
+        /// Compatibility flag; clearing already tries to refresh the current live config when applicable
         #[arg(long)]
         apply: bool,
     },
@@ -37,15 +46,56 @@ pub enum CommonConfigCommand {
 pub fn execute(cmd: CommonConfigCommand, app_type: AppType) -> Result<(), AppError> {
     match cmd {
         CommonConfigCommand::Show => show(app_type),
-        CommonConfigCommand::Set { json, file, apply } => {
-            set(app_type, json.as_deref(), file.as_deref(), apply)
-        }
+        CommonConfigCommand::Set {
+            snippet,
+            file,
+            apply,
+        } => set(app_type, snippet.as_deref(), file.as_deref(), apply),
         CommonConfigCommand::Clear { apply } => clear(app_type, apply),
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CommonConfigSnippetAction {
+    Set,
+    Clear,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FollowUpMessage {
+    Info(&'static str),
+    Success(&'static str),
+}
+
 fn get_state() -> Result<AppState, AppError> {
     AppState::try_new()
+}
+
+fn no_current_provider_message(action: CommonConfigSnippetAction) -> &'static str {
+    match action {
+        CommonConfigSnippetAction::Set => texts::common_config_snippet_no_current_provider(),
+        CommonConfigSnippetAction::Clear => {
+            texts::common_config_snippet_no_current_provider_after_clear()
+        }
+    }
+}
+
+fn follow_up_message(
+    app_type: AppType,
+    action: CommonConfigSnippetAction,
+    current_id: &str,
+) -> Option<FollowUpMessage> {
+    if app_type.is_additive_mode() {
+        return None;
+    }
+
+    if current_id.trim().is_empty() {
+        Some(FollowUpMessage::Info(no_current_provider_message(action)))
+    } else {
+        Some(FollowUpMessage::Success(
+            texts::common_config_snippet_applied(),
+        ))
+    }
 }
 
 fn show(app_type: AppType) -> Result<(), AppError> {
@@ -68,11 +118,11 @@ fn show(app_type: AppType) -> Result<(), AppError> {
 
 fn set(
     app_type: AppType,
-    json_text: Option<&str>,
+    snippet_text: Option<&str>,
     file: Option<&Path>,
-    apply: bool,
+    _apply: bool,
 ) -> Result<(), AppError> {
-    let raw = if let Some(text) = json_text {
+    let raw = if let Some(text) = snippet_text {
         text.to_string()
     } else if let Some(path) = file {
         fs::read_to_string(path).map_err(|e| AppError::io(path, e))?
@@ -82,48 +132,55 @@ fn set(
         ));
     };
 
-    let value: serde_json::Value = serde_json::from_str(&raw)
-        .map_err(|e| AppError::InvalidInput(texts::tui_toast_invalid_json(&e.to_string())))?;
-    if !value.is_object() {
-        return Err(AppError::InvalidInput(
-            texts::common_config_snippet_not_object().to_string(),
-        ));
-    }
+    let snippet = match app_type {
+        AppType::Claude | AppType::Gemini | AppType::OpenCode => {
+            let value: serde_json::Value = serde_json::from_str(&raw).map_err(|e| {
+                AppError::InvalidInput(texts::tui_toast_invalid_json(&e.to_string()))
+            })?;
+            if !value.is_object() {
+                return Err(AppError::InvalidInput(
+                    texts::common_config_snippet_not_object().to_string(),
+                ));
+            }
 
-    let pretty = serde_json::to_string_pretty(&value)
-        .map_err(|e| AppError::Message(texts::failed_to_serialize_json(&e.to_string())))?;
+            serde_json::to_string_pretty(&value)
+                .map_err(|e| AppError::Message(texts::failed_to_serialize_json(&e.to_string())))?
+        }
+        AppType::Codex => {
+            raw.parse::<toml_edit::DocumentMut>().map_err(|e| {
+                AppError::InvalidInput(texts::common_config_snippet_invalid_toml(&e.to_string()))
+            })?;
+            raw
+        }
+    };
 
     let state = get_state()?;
-    {
-        let mut config = state.config.write()?;
-        config.common_config_snippets.set(&app_type, Some(pretty));
-    }
-    state.save()?;
+    ProviderService::set_common_config_snippet(&state, app_type.clone(), Some(snippet))?;
 
     println!(
         "{}",
         success(&texts::config_common_snippet_set_for_app(app_type.as_str()))
     );
 
-    if apply {
-        apply_to_current(&state, app_type)?;
+    let current_id = if app_type.is_additive_mode() {
+        String::new()
     } else {
-        println!(
-            "{}",
-            info("Tip: run `cc-switch provider switch <id>` to re-apply settings to the live config.")
-        );
+        ProviderService::current(&state, app_type.clone())?
+    };
+    if let Some(message) = follow_up_message(app_type, CommonConfigSnippetAction::Set, &current_id)
+    {
+        match message {
+            FollowUpMessage::Info(text) => println!("{}", info(text)),
+            FollowUpMessage::Success(text) => println!("{}", success(text)),
+        }
     }
 
     Ok(())
 }
 
-fn clear(app_type: AppType, apply: bool) -> Result<(), AppError> {
+fn clear(app_type: AppType, _apply: bool) -> Result<(), AppError> {
     let state = get_state()?;
-    {
-        let mut config = state.config.write()?;
-        config.common_config_snippets.set(&app_type, None);
-    }
-    state.save()?;
+    ProviderService::clear_common_config_snippet(&state, app_type.clone())?;
 
     println!(
         "{}",
@@ -133,28 +190,235 @@ fn clear(app_type: AppType, apply: bool) -> Result<(), AppError> {
         ))
     );
 
-    if apply {
-        apply_to_current(&state, app_type)?;
+    let current_id = if app_type.is_additive_mode() {
+        String::new()
     } else {
-        println!(
-            "{}",
-            info("Tip: run `cc-switch provider switch <id>` to re-apply settings to the live config.")
-        );
+        ProviderService::current(&state, app_type.clone())?
+    };
+    if let Some(message) =
+        follow_up_message(app_type, CommonConfigSnippetAction::Clear, &current_id)
+    {
+        match message {
+            FollowUpMessage::Info(text) => println!("{}", info(text)),
+            FollowUpMessage::Success(text) => println!("{}", success(text)),
+        }
     }
 
     Ok(())
 }
 
-fn apply_to_current(state: &AppState, app_type: AppType) -> Result<(), AppError> {
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use serde_json::json;
+    use serial_test::serial;
+    use std::ffi::OsString;
+    use std::path::Path;
+    use tempfile::TempDir;
+
+    use crate::codex_config::{get_codex_config_dir, get_codex_config_path};
+    use crate::config::{get_claude_settings_path, read_json_file, write_json_file};
+    use crate::provider::Provider;
     use crate::services::ProviderService;
 
-    let current_id = ProviderService::current(state, app_type.clone())?;
-    if current_id.trim().is_empty() {
-        println!("{}", info("No current provider; nothing to apply."));
-        return Ok(());
+    struct EnvGuard {
+        old_home: Option<OsString>,
+        old_userprofile: Option<OsString>,
     }
 
-    ProviderService::switch(state, app_type, &current_id)?;
-    println!("{}", success("✓ Applied to live config."));
-    Ok(())
+    impl EnvGuard {
+        fn set_home(home: &Path) -> Self {
+            let old_home = std::env::var_os("HOME");
+            let old_userprofile = std::env::var_os("USERPROFILE");
+            std::env::set_var("HOME", home);
+            std::env::set_var("USERPROFILE", home);
+            Self {
+                old_home,
+                old_userprofile,
+            }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.old_home {
+                Some(value) => std::env::set_var("HOME", value),
+                None => std::env::remove_var("HOME"),
+            }
+            match &self.old_userprofile {
+                Some(value) => std::env::set_var("USERPROFILE", value),
+                None => std::env::remove_var("USERPROFILE"),
+            }
+        }
+    }
+
+    fn seed_current_claude_provider() -> (TempDir, EnvGuard) {
+        let temp_home = TempDir::new().expect("create temp home");
+        let env = EnvGuard::set_home(temp_home.path());
+        let state = AppState::try_new().expect("create state");
+
+        ProviderService::add(
+            &state,
+            AppType::Claude,
+            Provider::with_id(
+                "p1".to_string(),
+                "Provider One".to_string(),
+                json!({
+                    "env": {
+                        "ANTHROPIC_BASE_URL": "https://provider.example"
+                    }
+                }),
+                None,
+            ),
+        )
+        .expect("seed provider");
+        ProviderService::switch(&state, AppType::Claude, "p1").expect("switch provider");
+        write_json_file(
+            &get_claude_settings_path(),
+            &json!({
+                "env": {
+                    "ANTHROPIC_BASE_URL": "https://stale.example"
+                }
+            }),
+        )
+        .expect("seed stale live settings");
+
+        (temp_home, env)
+    }
+
+    fn seed_current_codex_provider() -> (TempDir, EnvGuard) {
+        let temp_home = TempDir::new().expect("create temp home");
+        let env = EnvGuard::set_home(temp_home.path());
+        std::fs::create_dir_all(get_codex_config_dir()).expect("create codex config dir");
+        let state = AppState::try_new().expect("create state");
+
+        ProviderService::add(
+            &state,
+            AppType::Codex,
+            Provider::with_id(
+                "p1".to_string(),
+                "Provider One".to_string(),
+                json!({
+                    "auth": {
+                        "OPENAI_API_KEY": "sk-provider"
+                    },
+                    "config": "model_provider = \"provider-one\"\nmodel = \"gpt-5.2-codex\"\n\n[model_providers.provider-one]\nbase_url = \"https://provider.example/v1\"\nwire_api = \"responses\"\nrequires_openai_auth = true\n"
+                }),
+                None,
+            ),
+        )
+        .expect("seed codex provider");
+        ProviderService::switch(&state, AppType::Codex, "p1").expect("switch provider");
+
+        (temp_home, env)
+    }
+
+    #[test]
+    #[serial]
+    fn set_updates_live_config_even_without_apply_flag() {
+        let (_temp_home, _env) = seed_current_claude_provider();
+
+        set(
+            AppType::Claude,
+            Some(r#"{"alwaysThinkingEnabled":false}"#),
+            None,
+            false,
+        )
+        .expect("set should succeed");
+
+        let live: serde_json::Value =
+            read_json_file(&get_claude_settings_path()).expect("read live settings");
+        assert_eq!(live["alwaysThinkingEnabled"], false);
+    }
+
+    #[test]
+    #[serial]
+    fn clear_updates_live_config_even_without_apply_flag() {
+        let (_temp_home, _env) = seed_current_claude_provider();
+        let state = AppState::try_new().expect("reload state");
+
+        ProviderService::set_common_config_snippet(
+            &state,
+            AppType::Claude,
+            Some(r#"{"alwaysThinkingEnabled":false}"#.to_string()),
+        )
+        .expect("seed common snippet");
+
+        clear(AppType::Claude, false).expect("clear should succeed");
+
+        let live: serde_json::Value =
+            read_json_file(&get_claude_settings_path()).expect("read live settings");
+        assert!(
+            live.get("alwaysThinkingEnabled").is_none(),
+            "clearing the common snippet should also clear it from live settings"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn set_accepts_codex_toml_common_snippet_and_updates_live_config() {
+        let (_temp_home, _env) = seed_current_codex_provider();
+
+        set(
+            AppType::Codex,
+            Some("disable_response_storage = true"),
+            None,
+            false,
+        )
+        .expect("set should accept codex toml snippet");
+
+        let state = AppState::try_new().expect("reload state");
+        let stored = state
+            .config
+            .read()
+            .expect("read config")
+            .common_config_snippets
+            .codex
+            .clone();
+        assert_eq!(stored.as_deref(), Some("disable_response_storage = true"));
+
+        let live =
+            std::fs::read_to_string(get_codex_config_path()).expect("read live codex config");
+        assert!(
+            live.contains("disable_response_storage = true"),
+            "service path should merge the codex common snippet into the live config"
+        );
+    }
+
+    #[test]
+    fn set_rejects_non_object_opencode_common_snippet() {
+        let err = set(AppType::OpenCode, Some("[]"), None, false)
+            .expect_err("OpenCode common snippet should require a JSON object");
+
+        assert!(
+            err.to_string()
+                .contains(texts::common_config_snippet_not_object()),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn no_current_provider_message_preserves_saved_copy_for_set() {
+        assert_eq!(
+            no_current_provider_message(CommonConfigSnippetAction::Set),
+            texts::common_config_snippet_no_current_provider()
+        );
+    }
+
+    #[test]
+    fn no_current_provider_message_uses_clear_copy_for_clear() {
+        assert_eq!(
+            no_current_provider_message(CommonConfigSnippetAction::Clear),
+            texts::common_config_snippet_no_current_provider_after_clear()
+        );
+    }
+
+    #[test]
+    fn follow_up_message_is_omitted_for_additive_apps() {
+        assert!(matches!(
+            follow_up_message(AppType::OpenCode, CommonConfigSnippetAction::Set, ""),
+            None
+        ));
+    }
 }

@@ -2320,7 +2320,7 @@ mod tests {
     }
 
     #[test]
-    fn provider_form_ctrl_s_merges_common_snippet_into_submitted_json() {
+    fn provider_form_ctrl_s_does_not_merge_common_snippet_for_claude() {
         let mut app = App::new(Some(AppType::Claude));
         app.route = Route::Providers;
         app.focus = Focus::Content;
@@ -2346,12 +2346,16 @@ mod tests {
             unreachable!("expected submit action");
         };
         assert!(
-            content.contains("\"alwaysThinkingEnabled\""),
-            "submitted provider JSON should include merged common snippet keys when enabled"
+            !content.contains("\"alwaysThinkingEnabled\""),
+            "submitted provider JSON should keep common snippet keys out of the raw payload"
         );
         assert!(
-            content.contains("\"statusLine\""),
-            "submitted provider JSON should include nested common snippet keys when enabled"
+            !content.contains("\"statusLine\""),
+            "submitted provider JSON should keep nested common snippet keys out of the raw payload"
+        );
+        assert!(
+            content.contains("\"ANTHROPIC_BASE_URL\""),
+            "submitted provider JSON should still include provider-specific settings"
         );
     }
 

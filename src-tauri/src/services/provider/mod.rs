@@ -23,7 +23,7 @@ use crate::config::{
     write_json_file,
 };
 use crate::error::AppError;
-use crate::provider::Provider;
+use crate::provider::{Provider, ProviderManager};
 use crate::store::AppState;
 
 use gemini_auth::GeminiAuthType;
@@ -60,6 +60,24 @@ struct PostCommitAction {
 }
 
 impl ProviderService {
+    fn parse_common_opencode_config_snippet(snippet: &str) -> Result<Value, AppError> {
+        let value: Value = serde_json::from_str(snippet).map_err(|e| {
+            AppError::localized(
+                "common_config.opencode.invalid_json",
+                format!("OpenCode 通用配置片段不是有效的 JSON：{e}"),
+                format!("OpenCode common config snippet is not valid JSON: {e}"),
+            )
+        })?;
+        if !value.is_object() {
+            return Err(AppError::localized(
+                "common_config.opencode.not_object",
+                "OpenCode 通用配置片段必须是 JSON 对象",
+                "OpenCode common config snippet must be a JSON object",
+            ));
+        }
+        Ok(value)
+    }
+
     fn run_transaction<R, F>(state: &AppState, f: F) -> Result<R, AppError>
     where
         F: FnOnce(&mut MultiAppConfig) -> Result<(R, Option<PostCommitAction>), AppError>,
@@ -193,7 +211,7 @@ impl ProviderService {
                 if let Some(snippet) = common_snippet.as_deref() {
                     let snippet = snippet.trim();
                     if !snippet.is_empty() {
-                        let common = Self::parse_common_claude_config_snippet(snippet)?;
+                        let common = Self::parse_common_claude_config_snippet_for_strip(snippet)?;
                         strip_common_values(&mut live_after, &common);
                     }
                 }
@@ -217,15 +235,48 @@ impl ProviderService {
                 let cfg_text = crate::codex_config::read_and_validate_codex_config_text()?;
                 let common_snippet_extracted =
                     Self::extract_codex_common_config_from_config_toml(&cfg_text)?;
+                let cfg_text_for_storage =
+                    Self::strip_codex_mcp_servers_from_snapshot_config(&cfg_text)?;
 
-                // Strip common config snippet keys from the full text before storing
-                let common_snippet_for_strip = {
+                let (provider, common_snippet_for_strip) = {
                     let guard = state.config.read().map_err(AppError::from)?;
-                    guard.common_config_snippets.codex.clone()
+                    (
+                        guard
+                            .get_manager(app_type)
+                            .and_then(|manager| manager.providers.get(provider_id))
+                            .cloned()
+                            .ok_or_else(|| {
+                                AppError::localized(
+                                    "provider.not_found",
+                                    format!("供应商不存在: {provider_id}"),
+                                    format!("Provider not found: {provider_id}"),
+                                )
+                            })?,
+                        guard.common_config_snippets.codex.clone(),
+                    )
                 };
-                let cfg_to_store = strip_codex_common_config_from_full_text(
-                    &cfg_text,
-                    common_snippet_for_strip.as_deref().unwrap_or_default(),
+                let effective_common_snippet = if common_snippet_for_strip
+                    .as_deref()
+                    .unwrap_or_default()
+                    .trim()
+                    .is_empty()
+                    && !common_snippet_extracted.trim().is_empty()
+                {
+                    Some(common_snippet_extracted.clone())
+                } else {
+                    common_snippet_for_strip.clone()
+                };
+
+                let mut raw_settings = serde_json::Map::new();
+                if let Some(auth) = auth {
+                    raw_settings.insert("auth".to_string(), auth);
+                }
+                raw_settings.insert("config".to_string(), Value::String(cfg_text_for_storage));
+                let settings_to_store = Self::normalize_settings_config_for_storage(
+                    app_type,
+                    &provider,
+                    Value::Object(raw_settings),
+                    effective_common_snippet.as_deref(),
                 )?;
 
                 {
@@ -240,20 +291,15 @@ impl ProviderService {
                             .is_empty()
                     {
                         guard.common_config_snippets.codex = Some(common_snippet_extracted.clone());
+                        Self::normalize_existing_provider_snapshots_for_storage_best_effort(
+                            &mut guard,
+                            app_type,
+                            Some(common_snippet_extracted.as_str()),
+                        );
                     }
                     if let Some(manager) = guard.get_manager_mut(app_type) {
                         if let Some(target) = manager.providers.get_mut(provider_id) {
-                            let obj = target.settings_config.as_object_mut().ok_or_else(|| {
-                                AppError::Config(format!(
-                                    "供应商 {provider_id} 的 Codex 配置必须是 JSON 对象"
-                                ))
-                            })?;
-                            if let Some(auth) = auth {
-                                obj.insert("auth".to_string(), auth);
-                            } else {
-                                obj.remove("auth");
-                            }
-                            obj.insert("config".to_string(), Value::String(cfg_to_store.clone()));
+                            target.settings_config = settings_to_store.clone();
                         }
                     }
                 }
@@ -286,17 +332,29 @@ impl ProviderService {
                     obj.insert("config".to_string(), config_value);
                 }
 
-                let common_snippet = {
+                let (provider, common_snippet) = {
                     let guard = state.config.read().map_err(AppError::from)?;
-                    guard.common_config_snippets.gemini.clone()
+                    (
+                        guard
+                            .get_manager(app_type)
+                            .and_then(|manager| manager.providers.get(provider_id))
+                            .cloned()
+                            .ok_or_else(|| {
+                                AppError::localized(
+                                    "provider.not_found",
+                                    format!("供应商不存在: {provider_id}"),
+                                    format!("Provider not found: {provider_id}"),
+                                )
+                            })?,
+                        guard.common_config_snippets.gemini.clone(),
+                    )
                 };
-                if let Some(snippet) = common_snippet.as_deref() {
-                    let snippet = snippet.trim();
-                    if !snippet.is_empty() {
-                        let common = Self::parse_common_gemini_config_snippet(snippet)?;
-                        strip_common_values(&mut live_after, &common);
-                    }
-                }
+                let live_after = Self::normalize_settings_config_for_storage(
+                    app_type,
+                    &provider,
+                    live_after,
+                    common_snippet.as_deref(),
+                )?;
 
                 {
                     let mut guard = state.config.write().map_err(AppError::from)?;
@@ -334,6 +392,382 @@ impl ProviderService {
 
     fn capture_live_snapshot(app_type: &AppType) -> Result<LiveSnapshot, AppError> {
         live::capture_live_snapshot(app_type)
+    }
+
+    fn validate_common_config_snippet(
+        app_type: &AppType,
+        snippet: Option<&str>,
+    ) -> Result<(), AppError> {
+        let Some(snippet) = snippet.map(str::trim) else {
+            return Ok(());
+        };
+        if snippet.is_empty() {
+            return Ok(());
+        }
+
+        match app_type {
+            AppType::Claude => {
+                Self::parse_common_claude_config_snippet(snippet)?;
+            }
+            AppType::Codex => {
+                snippet.parse::<toml_edit::DocumentMut>().map_err(|e| {
+                    AppError::Config(format!("Common config TOML parse error: {e}"))
+                })?;
+            }
+            AppType::Gemini => {
+                Self::parse_common_gemini_config_snippet(snippet)?;
+            }
+            AppType::OpenCode => {
+                Self::parse_common_opencode_config_snippet(snippet)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn should_skip_common_config_migration_error(app_type: &AppType, err: &AppError) -> bool {
+        match (app_type, err) {
+            (AppType::Claude, AppError::Localized { key, .. }) => {
+                key.starts_with("common_config.claude.")
+            }
+            (AppType::Codex, AppError::Config(message)) => {
+                message.starts_with("Common config TOML parse error:")
+            }
+            (AppType::Gemini, AppError::Localized { key, .. }) => {
+                key.starts_with("common_config.gemini.")
+            }
+            _ => false,
+        }
+    }
+
+    fn migrate_old_common_config_snippet_best_effort(
+        config: &mut MultiAppConfig,
+        app_type: &AppType,
+        old_snippet: Option<&str>,
+    ) -> Result<(), AppError> {
+        let Some(old_snippet) = old_snippet.map(str::trim) else {
+            return Ok(());
+        };
+        if old_snippet.is_empty() {
+            return Ok(());
+        }
+
+        let result = match app_type {
+            AppType::Claude => Self::migrate_claude_common_config_snippet(config, old_snippet),
+            AppType::Codex => Self::migrate_codex_common_config_snippet(config, old_snippet),
+            AppType::Gemini => Self::migrate_gemini_common_config_snippet(config, old_snippet),
+            AppType::OpenCode => Ok(()),
+        };
+
+        match result {
+            Ok(()) => Ok(()),
+            Err(err) if Self::should_skip_common_config_migration_error(app_type, &err) => {
+                log::warn!(
+                    "skip migrating {app_type} provider snapshots from invalid stored common config snippet: {err}"
+                );
+                Ok(())
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    fn build_common_config_post_commit_action(
+        config: &mut MultiAppConfig,
+        app_type: &AppType,
+        takeover_active: bool,
+    ) -> Result<Option<PostCommitAction>, AppError> {
+        if app_type.is_additive_mode() {
+            return Ok(None);
+        }
+
+        let Some(current_provider_id) =
+            Self::self_heal_current_provider(config, app_type, "set_common_config_snippet")
+        else {
+            return Ok(None);
+        };
+
+        Self::build_post_commit_action_for_current_provider(
+            config,
+            app_type,
+            &current_provider_id,
+            takeover_active,
+        )
+    }
+
+    fn build_post_commit_action_for_current_provider(
+        config: &MultiAppConfig,
+        app_type: &AppType,
+        current_provider_id: &str,
+        takeover_active: bool,
+    ) -> Result<Option<PostCommitAction>, AppError> {
+        let provider = config
+            .get_manager(app_type)
+            .and_then(|manager| manager.providers.get(current_provider_id).cloned());
+
+        let Some(provider) = provider else {
+            return Ok(None);
+        };
+
+        Ok(Some(PostCommitAction {
+            app_type: app_type.clone(),
+            provider,
+            backup: Self::capture_live_snapshot(app_type)?,
+            sync_mcp: matches!(app_type, AppType::Codex) && !takeover_active,
+            refresh_snapshot: false,
+            common_config_snippet: config.common_config_snippets.get(app_type).cloned(),
+            takeover_active,
+        }))
+    }
+
+    fn normalize_provider_for_storage(
+        app_type: &AppType,
+        provider: &mut Provider,
+        common_config_snippet: Option<&str>,
+    ) -> Result<(), AppError> {
+        match app_type {
+            AppType::Claude => {
+                Self::strip_common_claude_config_from_provider(provider, common_config_snippet)?;
+            }
+            AppType::Codex => {
+                Self::strip_common_codex_config_from_provider(provider, common_config_snippet)?;
+            }
+            AppType::Gemini => {
+                Self::strip_common_gemini_config_from_provider(provider, common_config_snippet)?;
+            }
+            AppType::OpenCode => {}
+        }
+
+        Ok(())
+    }
+
+    fn normalize_settings_config_for_storage(
+        app_type: &AppType,
+        provider: &Provider,
+        settings_config: Value,
+        common_config_snippet: Option<&str>,
+    ) -> Result<Value, AppError> {
+        let mut snapshot_provider = provider.clone();
+        snapshot_provider.settings_config = settings_config;
+        Self::normalize_provider_for_storage(
+            app_type,
+            &mut snapshot_provider,
+            common_config_snippet,
+        )?;
+        Ok(snapshot_provider.settings_config)
+    }
+
+    fn normalize_existing_provider_snapshots_for_storage(
+        config: &mut MultiAppConfig,
+        app_type: &AppType,
+        common_config_snippet: Option<&str>,
+    ) -> Result<(), AppError> {
+        let Some(manager) = config.get_manager_mut(app_type) else {
+            return Ok(());
+        };
+
+        for provider in manager.providers.values_mut() {
+            Self::normalize_provider_for_storage(app_type, provider, common_config_snippet)?;
+        }
+
+        Ok(())
+    }
+
+    fn normalize_existing_provider_snapshots_for_storage_best_effort(
+        config: &mut MultiAppConfig,
+        app_type: &AppType,
+        common_config_snippet: Option<&str>,
+    ) {
+        let Some(manager) = config.get_manager_mut(app_type) else {
+            return;
+        };
+
+        for (provider_id, provider) in manager.providers.iter_mut() {
+            if let Err(err) =
+                Self::normalize_provider_for_storage(app_type, provider, common_config_snippet)
+            {
+                log::warn!(
+                    "skip normalizing {app_type} provider snapshot '{provider_id}' while applying auto-extracted common config: {err}"
+                );
+            }
+        }
+    }
+
+    fn normalize_existing_provider_snapshots_for_storage_strict_current_best_effort_others(
+        config: &mut MultiAppConfig,
+        app_type: &AppType,
+        common_config_snippet: Option<&str>,
+    ) -> Result<(), AppError> {
+        let Some(current_provider_id) = config.get_manager(app_type).and_then(|manager| {
+            if manager.current.is_empty() || !manager.providers.contains_key(&manager.current) {
+                None
+            } else {
+                Some(manager.current.clone())
+            }
+        }) else {
+            return Self::normalize_existing_provider_snapshots_for_storage(
+                config,
+                app_type,
+                common_config_snippet,
+            );
+        };
+
+        let Some(manager) = config.get_manager_mut(app_type) else {
+            return Ok(());
+        };
+
+        if let Some(current_provider) = manager.providers.get_mut(&current_provider_id) {
+            Self::normalize_provider_for_storage(
+                app_type,
+                current_provider,
+                common_config_snippet,
+            )?;
+        }
+
+        for (provider_id, provider) in manager.providers.iter_mut() {
+            if provider_id == &current_provider_id {
+                continue;
+            }
+
+            if let Err(err) =
+                Self::normalize_provider_for_storage(app_type, provider, common_config_snippet)
+            {
+                log::warn!(
+                    "skip normalizing {app_type} non-current provider snapshot '{provider_id}' while updating common config snippet: {err}"
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    fn self_heal_current_provider(
+        config: &mut MultiAppConfig,
+        app_type: &AppType,
+        log_context: &str,
+    ) -> Option<String> {
+        let manager = config.get_manager_mut(app_type)?;
+
+        if manager.providers.is_empty() {
+            manager.current.clear();
+            return None;
+        }
+
+        if manager.current.is_empty() || !manager.providers.contains_key(&manager.current) {
+            let previous_current = manager.current.clone();
+            manager.current = Self::fallback_current_provider_id(manager);
+            if manager.current.is_empty() {
+                return None;
+            }
+            log::warn!(
+                "{log_context}: {app_type} current provider '{}' is invalid, self-healed to '{}'",
+                previous_current,
+                manager.current
+            );
+        }
+
+        Some(manager.current.clone())
+    }
+
+    fn fallback_current_provider_id(manager: &ProviderManager) -> String {
+        let mut provider_list: Vec<_> = manager.providers.iter().collect();
+        provider_list.sort_by(|(_, a), (_, b)| match (a.sort_index, b.sort_index) {
+            (Some(idx_a), Some(idx_b)) => idx_a.cmp(&idx_b),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => a.created_at.cmp(&b.created_at),
+        });
+
+        provider_list
+            .first()
+            .map(|(id, _)| (*id).clone())
+            .unwrap_or_default()
+    }
+
+    pub fn set_common_config_snippet(
+        state: &AppState,
+        app_type: AppType,
+        snippet: Option<String>,
+    ) -> Result<(), AppError> {
+        let normalized_snippet = snippet.and_then(|value| {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        });
+        Self::validate_common_config_snippet(&app_type, normalized_snippet.as_deref())?;
+
+        let app_type_clone = app_type.clone();
+        let takeover_active = if app_type.is_additive_mode() {
+            false
+        } else {
+            let is_running = state
+                .proxy_service
+                .is_running_blocking()
+                .map_err(AppError::Message)?;
+            if !is_running {
+                false
+            } else {
+                state
+                    .proxy_service
+                    .is_app_takeover_active_blocking(&app_type)
+                    .map_err(AppError::Message)?
+            }
+        };
+
+        Self::run_transaction(state, move |config| {
+            config.ensure_app(&app_type_clone);
+
+            if !app_type_clone.is_additive_mode() {
+                Self::self_heal_current_provider(
+                    config,
+                    &app_type_clone,
+                    "set_common_config_snippet",
+                );
+            }
+
+            let old_snippet = config
+                .common_config_snippets
+                .get(&app_type_clone)
+                .cloned()
+                .filter(|value| !value.trim().is_empty());
+
+            Self::migrate_old_common_config_snippet_best_effort(
+                config,
+                &app_type_clone,
+                old_snippet.as_deref(),
+            )?;
+
+            config
+                .common_config_snippets
+                .set(&app_type_clone, normalized_snippet.clone());
+
+            if matches!(
+                app_type_clone,
+                AppType::Claude | AppType::Codex | AppType::Gemini
+            ) {
+                Self::normalize_existing_provider_snapshots_for_storage_strict_current_best_effort_others(
+                    config,
+                    &app_type_clone,
+                    normalized_snippet.as_deref(),
+                )?;
+            }
+
+            let action = Self::build_common_config_post_commit_action(
+                config,
+                &app_type_clone,
+                takeover_active,
+            )?;
+            Ok(((), action))
+        })
+    }
+
+    pub fn clear_common_config_snippet(
+        state: &AppState,
+        app_type: AppType,
+    ) -> Result<(), AppError> {
+        Self::set_common_config_snippet(state, app_type, None)
     }
 
     /// 列出指定应用下的所有供应商
@@ -375,18 +809,7 @@ impl ProviderService {
                 return Ok((manager.current.clone(), None));
             }
 
-            let mut provider_list: Vec<_> = manager.providers.iter().collect();
-            provider_list.sort_by(|(_, a), (_, b)| match (a.sort_index, b.sort_index) {
-                (Some(idx_a), Some(idx_b)) => idx_a.cmp(&idx_b),
-                (Some(_), None) => std::cmp::Ordering::Less,
-                (None, Some(_)) => std::cmp::Ordering::Greater,
-                (None, None) => a.created_at.cmp(&b.created_at),
-            });
-
-            manager.current = provider_list
-                .first()
-                .map(|(id, _)| (*id).clone())
-                .unwrap_or_default();
+            manager.current = Self::fallback_current_provider_id(manager);
 
             Ok((manager.current.clone(), None))
         })
@@ -403,7 +826,24 @@ impl ProviderService {
         let provider_clone = provider.clone();
 
         Self::run_transaction(state, move |config| {
+            let common_config_snippet = config.common_config_snippets.get(&app_type_clone).cloned();
+            let mut provider_to_store = provider_clone.clone();
+            Self::normalize_provider_for_storage(
+                &app_type_clone,
+                &mut provider_to_store,
+                common_config_snippet.as_deref(),
+            )?;
+
             config.ensure_app(&app_type_clone);
+            let previous_current = config
+                .get_manager(&app_type_clone)
+                .map(|manager| manager.current.clone())
+                .unwrap_or_default();
+            let healed_current = if !app_type_clone.is_additive_mode() {
+                Self::self_heal_current_provider(config, &app_type_clone, "add")
+            } else {
+                None
+            };
             let manager = config
                 .get_manager_mut(&app_type_clone)
                 .ok_or_else(|| Self::app_not_found(&app_type_clone))?;
@@ -411,27 +851,41 @@ impl ProviderService {
             let was_empty = manager.providers.is_empty();
             manager
                 .providers
-                .insert(provider_clone.id.clone(), provider_clone.clone());
+                .insert(provider_to_store.id.clone(), provider_to_store.clone());
 
             if !app_type_clone.is_additive_mode() && was_empty && manager.current.is_empty() {
-                manager.current = provider_clone.id.clone();
+                manager.current = provider_to_store.id.clone();
             }
 
             let is_current =
-                app_type_clone.is_additive_mode() || manager.current == provider_clone.id;
+                app_type_clone.is_additive_mode() || manager.current == provider_to_store.id;
+            let current_was_healed = !app_type_clone.is_additive_mode()
+                && healed_current.as_deref() != Some(previous_current.as_str());
+            let current_provider_id = if current_was_healed && !is_current {
+                Some(manager.current.clone())
+            } else {
+                None
+            };
             let action = if is_current {
                 let backup = Self::capture_live_snapshot(&app_type_clone)?;
-                let common_config_snippet =
-                    config.common_config_snippets.get(&app_type_clone).cloned();
                 Some(PostCommitAction {
                     app_type: app_type_clone.clone(),
-                    provider: provider_clone.clone(),
+                    provider: provider_to_store.clone(),
                     backup,
-                    sync_mcp: false,
+                    // Codex current-provider saves rewrite live config from the stored snapshot,
+                    // so managed MCP must be synced back after the write.
+                    sync_mcp: matches!(&app_type_clone, AppType::Codex),
                     refresh_snapshot: false,
                     common_config_snippet,
                     takeover_active: false,
                 })
+            } else if let Some(current_provider_id) = current_provider_id {
+                Self::build_post_commit_action_for_current_provider(
+                    config,
+                    &app_type_clone,
+                    &current_provider_id,
+                    false,
+                )?
             } else {
                 None
             };
@@ -455,6 +909,16 @@ impl ProviderService {
         let provider_clone = provider.clone();
 
         Self::run_transaction(state, move |config| {
+            let common_config_snippet = config.common_config_snippets.get(&app_type_clone).cloned();
+            let previous_current = config
+                .get_manager(&app_type_clone)
+                .map(|manager| manager.current.clone())
+                .unwrap_or_default();
+            let healed_current = if !app_type_clone.is_additive_mode() {
+                Self::self_heal_current_provider(config, &app_type_clone, "update")
+            } else {
+                None
+            };
             let manager = config
                 .get_manager_mut(&app_type_clone)
                 .ok_or_else(|| Self::app_not_found(&app_type_clone))?;
@@ -468,7 +932,7 @@ impl ProviderService {
             }
 
             let is_current = app_type_clone.is_additive_mode() || manager.current == provider_id;
-            let merged = if let Some(existing) = manager.providers.get(&provider_id) {
+            let mut merged = if let Some(existing) = manager.providers.get(&provider_id) {
                 let mut updated = provider_clone.clone();
                 match (existing.meta.as_ref(), updated.meta.take()) {
                     // 前端未提供 meta，表示不修改，沿用旧值
@@ -488,21 +952,43 @@ impl ProviderService {
                 provider_clone.clone()
             };
 
-            manager.providers.insert(provider_id.clone(), merged);
+            Self::normalize_provider_for_storage(
+                &app_type_clone,
+                &mut merged,
+                common_config_snippet.as_deref(),
+            )?;
 
+            manager
+                .providers
+                .insert(provider_id.clone(), merged.clone());
+
+            let current_was_healed = !app_type_clone.is_additive_mode()
+                && healed_current.as_deref() != Some(previous_current.as_str());
+            let current_provider_id = if current_was_healed && !is_current {
+                Some(manager.current.clone())
+            } else {
+                None
+            };
             let action = if is_current {
                 let backup = Self::capture_live_snapshot(&app_type_clone)?;
-                let common_config_snippet =
-                    config.common_config_snippets.get(&app_type_clone).cloned();
                 Some(PostCommitAction {
                     app_type: app_type_clone.clone(),
-                    provider: provider_clone.clone(),
+                    provider: merged,
                     backup,
-                    sync_mcp: false,
+                    // Codex current-provider saves rewrite live config from the stored snapshot,
+                    // so managed MCP must be synced back after the write.
+                    sync_mcp: matches!(&app_type_clone, AppType::Codex),
                     refresh_snapshot: false,
                     common_config_snippet,
                     takeover_active: false,
                 })
+            } else if let Some(current_provider_id) = current_provider_id {
+                Self::build_post_commit_action_for_current_provider(
+                    config,
+                    &app_type_clone,
+                    &current_provider_id,
+                    false,
+                )?
             } else {
                 None
             };
@@ -627,8 +1113,20 @@ impl ProviderService {
         );
         provider.category = Some("custom".to_string());
 
+        let common_config_snippet = {
+            let config = state.config.read().map_err(AppError::from)?;
+            config.common_config_snippets.get(&app_type).cloned()
+        };
+        provider.settings_config = Self::normalize_settings_config_for_storage(
+            &app_type,
+            &provider,
+            provider.settings_config.clone(),
+            common_config_snippet.as_deref(),
+        )?;
+
         {
             let mut config = state.config.write().map_err(AppError::from)?;
+            config.ensure_app(&app_type);
             let manager = config
                 .get_manager_mut(&app_type)
                 .ok_or_else(|| Self::app_not_found(&app_type))?;

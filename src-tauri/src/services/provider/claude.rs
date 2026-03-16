@@ -19,6 +19,14 @@ impl ProviderService {
         Ok(value)
     }
 
+    pub(super) fn parse_common_claude_config_snippet_for_strip(
+        snippet: &str,
+    ) -> Result<Value, AppError> {
+        let mut value = Self::parse_common_claude_config_snippet(snippet)?;
+        let _ = Self::normalize_claude_models_in_value(&mut value);
+        Ok(value)
+    }
+
     /// 归一化 Claude 模型键：读旧键(ANTHROPIC_SMALL_FAST_MODEL)，写新键(DEFAULT_*), 并删除旧键
     pub(super) fn normalize_claude_models_in_value(settings: &mut Value) -> bool {
         let mut changed = false;
@@ -100,6 +108,31 @@ impl ProviderService {
         }
     }
 
+    pub(super) fn strip_common_claude_config_from_provider(
+        provider: &mut Provider,
+        common_config_snippet: Option<&str>,
+    ) -> Result<(), AppError> {
+        let apply_common_config = provider
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.apply_common_config)
+            .unwrap_or(true);
+        if !apply_common_config {
+            return Ok(());
+        }
+
+        let Some(snippet) = common_config_snippet.map(str::trim) else {
+            return Ok(());
+        };
+        if snippet.is_empty() {
+            return Ok(());
+        }
+
+        let common = Self::parse_common_claude_config_snippet_for_strip(snippet)?;
+        strip_common_values(&mut provider.settings_config, &common);
+        Ok(())
+    }
+
     pub(super) fn prepare_switch_claude(
         config: &mut MultiAppConfig,
         provider_id: &str,
@@ -149,13 +182,41 @@ impl ProviderService {
         if let Some(snippet) = config.common_config_snippets.claude.as_deref() {
             let snippet = snippet.trim();
             if !snippet.is_empty() {
-                let common = Self::parse_common_claude_config_snippet(snippet)?;
+                let common = Self::parse_common_claude_config_snippet_for_strip(snippet)?;
                 strip_common_values(&mut live, &common);
             }
         }
         if let Some(manager) = config.get_manager_mut(&AppType::Claude) {
             if let Some(current) = manager.providers.get_mut(&current_id) {
                 current.settings_config = live;
+            }
+        }
+
+        Ok(())
+    }
+
+    pub(super) fn migrate_claude_common_config_snippet(
+        config: &mut MultiAppConfig,
+        old_snippet: &str,
+    ) -> Result<(), AppError> {
+        let old_snippet = old_snippet.trim();
+        if old_snippet.is_empty() {
+            return Ok(());
+        }
+
+        let common = Self::parse_common_claude_config_snippet_for_strip(old_snippet)?;
+        let Some(manager) = config.get_manager_mut(&AppType::Claude) else {
+            return Ok(());
+        };
+
+        for provider in manager.providers.values_mut() {
+            if provider
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.apply_common_config)
+                .unwrap_or(true)
+            {
+                strip_common_values(&mut provider.settings_config, &common);
             }
         }
 

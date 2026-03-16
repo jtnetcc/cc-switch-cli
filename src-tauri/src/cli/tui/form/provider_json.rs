@@ -312,7 +312,7 @@ impl ProviderAddFormState {
         };
 
         match self.app_type {
-            AppType::Claude | AppType::Gemini | AppType::OpenCode => {
+            AppType::Claude | AppType::Gemini => {
                 let mut common: Value = serde_json::from_str(snippet).map_err(|e| {
                     crate::cli::i18n::texts::common_config_snippet_invalid_json(&e.to_string())
                 })?;
@@ -325,6 +325,7 @@ impl ProviderAddFormState {
                 merge_json_values(&mut common, settings_value);
                 *settings_value = common;
             }
+            AppType::OpenCode => {}
             AppType::Codex => {
                 if !settings_value.is_object() {
                     *settings_value = json!({});
@@ -374,7 +375,7 @@ pub(crate) fn strip_common_config_from_settings(
     }
 
     match app_type {
-        AppType::Claude | AppType::Gemini | AppType::OpenCode => {
+        AppType::Claude | AppType::Gemini => {
             let common: Value = serde_json::from_str(snippet).map_err(|e| {
                 crate::cli::i18n::texts::common_config_snippet_invalid_json(&e.to_string())
             })?;
@@ -384,6 +385,7 @@ pub(crate) fn strip_common_config_from_settings(
 
             strip_common_json_values(settings_value, &common);
         }
+        AppType::OpenCode => {}
         AppType::Codex => {
             if !settings_value.is_object() {
                 return Ok(());

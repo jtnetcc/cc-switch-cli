@@ -354,9 +354,9 @@ pub fn config_common_snippet_set_for_app(app: &str) -> String {
 
 pub fn config_common_snippet_require_json_or_file() -> &'static str {
     if is_chinese() {
-        "请提供 --json 或 --file"
+        "请提供 --snippet（或兼容别名 --json）或 --file"
     } else {
-        "Please provide --json or --file"
+        "Please provide --snippet (or the compatibility alias --json) or --file"
     }
 }
 
@@ -491,9 +491,9 @@ pub fn common_config_snippet_cleared() -> &'static str {
 
 pub fn common_config_snippet_apply_now() -> &'static str {
     if is_chinese() {
-        "现在应用到当前供应商（写入 live 配置）？"
+        "现在在适用时刷新 live 配置？"
     } else {
-        "Apply to current provider now (write live config)?"
+        "Refresh live config now when applicable?"
     }
 }
 
@@ -505,11 +505,27 @@ pub fn common_config_snippet_no_current_provider() -> &'static str {
     }
 }
 
+pub fn common_config_snippet_no_current_provider_after_clear() -> &'static str {
+    if is_chinese() {
+        "当前未选择供应商，已清除通用配置片段。"
+    } else {
+        "No current provider selected; common config snippet cleared."
+    }
+}
+
 pub fn common_config_snippet_applied() -> &'static str {
     if is_chinese() {
-        "✓ 已应用到 live 配置（请重启对应客户端）"
+        "✓ 已在适用时刷新 live 配置（请重启对应客户端）"
     } else {
-        "✓ Applied to live config (restart the client)"
+        "✓ Refreshed live config when applicable (restart the client)"
+    }
+}
+
+pub fn common_config_snippet_apply_not_needed() -> &'static str {
+    if is_chinese() {
+        "当前应用使用 additive 模式，无需执行当前 provider 刷新。"
+    } else {
+        "This app uses additive mode; no current-provider refresh is needed."
     }
 }
 

@@ -60,8 +60,39 @@ impl ProviderService {
             return Ok(());
         }
 
-        config.common_config_snippets.codex = Some(extracted);
+        config.common_config_snippets.codex = Some(extracted.clone());
+        Self::normalize_existing_provider_snapshots_for_storage_best_effort(
+            config,
+            &AppType::Codex,
+            Some(extracted.as_str()),
+        );
         Ok(())
+    }
+
+    pub(super) fn strip_codex_mcp_servers_from_snapshot_config(
+        config_toml: &str,
+    ) -> Result<String, AppError> {
+        let config_toml = config_toml.trim();
+        if config_toml.is_empty() {
+            return Ok(String::new());
+        }
+
+        let mut doc = config_toml
+            .parse::<toml_edit::DocumentMut>()
+            .map_err(|e| AppError::Config(format!("TOML parse error: {e}")))?;
+        let root = doc.as_table_mut();
+        root.remove("mcp_servers");
+
+        if let Some(mcp_item) = root.get_mut("mcp") {
+            if let Some(mcp_table) = mcp_item.as_table_like_mut() {
+                mcp_table.remove("servers");
+                if mcp_table.iter().next().is_none() {
+                    root.remove("mcp");
+                }
+            }
+        }
+
+        Ok(doc.to_string())
     }
 
     pub(super) fn merge_toml_tables(dst: &mut toml_edit::Table, src: &toml_edit::Table) {
@@ -85,27 +116,130 @@ impl ProviderService {
     }
 
     pub(super) fn strip_toml_tables(dst: &mut toml_edit::Table, src: &toml_edit::Table) {
+        let mut keys_to_remove = Vec::new();
+
         for (key, src_item) in src.iter() {
-            let should_remove = if let Some(src_table) = src_item.as_table() {
-                match dst.get_mut(key) {
-                    Some(dst_item) => {
-                        if let Some(dst_table) = dst_item.as_table_mut() {
-                            Self::strip_toml_tables(dst_table, src_table);
-                            dst_table.is_empty()
-                        } else {
-                            true
-                        }
-                    }
-                    None => false,
-                }
-            } else {
-                dst.contains_key(key)
+            let Some(dst_item) = dst.get_mut(key) else {
+                continue;
             };
 
-            if should_remove {
-                dst.remove(key);
+            match (dst_item, src_item) {
+                (toml_edit::Item::Table(dst_table), toml_edit::Item::Table(src_table)) => {
+                    Self::strip_toml_tables(dst_table, src_table);
+                    if dst_table.is_empty() {
+                        keys_to_remove.push(key.to_string());
+                    }
+                }
+                (dst_item, src_item) => {
+                    if Self::toml_items_equal(dst_item, src_item) {
+                        keys_to_remove.push(key.to_string());
+                    }
+                }
             }
         }
+
+        for key in keys_to_remove {
+            dst.remove(&key);
+        }
+    }
+
+    fn toml_items_equal(left: &toml_edit::Item, right: &toml_edit::Item) -> bool {
+        match (left.as_value(), right.as_value()) {
+            (Some(left_value), Some(right_value)) => {
+                left_value.to_string().trim() == right_value.to_string().trim()
+            }
+            _ => left.to_string().trim() == right.to_string().trim(),
+        }
+    }
+
+    pub(super) fn strip_common_codex_config_from_provider(
+        provider: &mut Provider,
+        common_config_snippet: Option<&str>,
+    ) -> Result<(), AppError> {
+        let apply_common_config = provider
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.apply_common_config)
+            .unwrap_or(true);
+        if !apply_common_config {
+            return Ok(());
+        }
+
+        let Some(snippet) = common_config_snippet.map(str::trim) else {
+            return Ok(());
+        };
+        if snippet.is_empty() {
+            return Ok(());
+        }
+
+        let settings = provider
+            .settings_config
+            .as_object_mut()
+            .ok_or_else(|| AppError::Config("Codex 配置必须是 JSON 对象".into()))?;
+        let Some(config_value) = settings.get_mut("config") else {
+            return Ok(());
+        };
+        if config_value.is_null() {
+            return Ok(());
+        }
+
+        let cfg_text = config_value
+            .as_str()
+            .ok_or_else(|| AppError::Config("Codex config 字段必须是字符串".into()))?;
+        *config_value = Value::String(strip_codex_common_config_from_full_text(cfg_text, snippet)?);
+        Ok(())
+    }
+
+    pub(super) fn migrate_codex_common_config_snippet(
+        config: &mut MultiAppConfig,
+        old_snippet: &str,
+    ) -> Result<(), AppError> {
+        let old_snippet = old_snippet.trim();
+        if old_snippet.is_empty() {
+            return Ok(());
+        }
+
+        let Some(current_provider_id) = config.get_manager(&AppType::Codex).and_then(|manager| {
+            if manager.current.is_empty() || !manager.providers.contains_key(&manager.current) {
+                None
+            } else {
+                Some(manager.current.clone())
+            }
+        }) else {
+            let Some(manager) = config.get_manager_mut(&AppType::Codex) else {
+                return Ok(());
+            };
+
+            for provider in manager.providers.values_mut() {
+                Self::strip_common_codex_config_from_provider(provider, Some(old_snippet))?;
+            }
+
+            return Ok(());
+        };
+
+        let Some(manager) = config.get_manager_mut(&AppType::Codex) else {
+            return Ok(());
+        };
+
+        if let Some(current_provider) = manager.providers.get_mut(&current_provider_id) {
+            Self::strip_common_codex_config_from_provider(current_provider, Some(old_snippet))?;
+        }
+
+        for (provider_id, provider) in manager.providers.iter_mut() {
+            if provider_id == &current_provider_id {
+                continue;
+            }
+
+            if let Err(err) =
+                Self::strip_common_codex_config_from_provider(provider, Some(old_snippet))
+            {
+                log::warn!(
+                    "skip migrating Codex non-current provider snapshot '{provider_id}' from stored common config snippet: {err}"
+                );
+            }
+        }
+
+        Ok(())
     }
 
     pub(super) fn prepare_switch_codex(
@@ -154,45 +288,47 @@ impl ProviderService {
             return Ok(());
         }
 
+        let current_provider = config
+            .get_manager(&AppType::Codex)
+            .and_then(|manager| manager.providers.get(&current_id))
+            .cloned();
+        let Some(current_provider) = current_provider else {
+            return Ok(());
+        };
+
         let auth = if auth_path.exists() {
             Some(read_json_file::<Value>(&auth_path)?)
         } else {
             None
         };
 
-        // Align with upstream: store the FULL config.toml text, not a snippet.
-        // This preserves all fields (model_reasoning_effort, disable_response_storage, etc.)
-        // and avoids lossy round-trips through snippet extraction.
-        let config_text = if config_path.exists() {
+        let settings_config = if config_path.exists() {
             let text =
                 std::fs::read_to_string(&config_path).map_err(|e| AppError::io(&config_path, e))?;
             Self::maybe_update_codex_common_config_snippet(config, &text)?;
 
-            // Strip common config snippet keys so they don't get duplicated
-            let common_snippet = config
-                .common_config_snippets
-                .codex
-                .as_deref()
-                .unwrap_or_default();
-            let stripped = strip_codex_common_config_from_full_text(&text, common_snippet)?;
-            Some(stripped)
+            let mut raw_settings = serde_json::Map::new();
+            if let Some(auth) = auth.clone() {
+                raw_settings.insert("auth".to_string(), auth);
+            }
+            raw_settings.insert("config".to_string(), Value::String(text));
+            Self::normalize_settings_config_for_storage(
+                &AppType::Codex,
+                &current_provider,
+                Value::Object(raw_settings),
+                config.common_config_snippets.codex.as_deref(),
+            )?
         } else {
-            None
+            let mut raw_settings = serde_json::Map::new();
+            if let Some(auth) = auth.clone() {
+                raw_settings.insert("auth".to_string(), auth);
+            }
+            Value::Object(raw_settings)
         };
 
         if let Some(manager) = config.get_manager_mut(&AppType::Codex) {
             if let Some(current) = manager.providers.get_mut(&current_id) {
-                if !current.settings_config.is_object() {
-                    current.settings_config = json!({});
-                }
-
-                let obj = current.settings_config.as_object_mut().unwrap();
-                if let Some(auth) = auth {
-                    obj.insert("auth".to_string(), auth);
-                }
-                if let Some(config_text) = config_text {
-                    obj.insert("config".to_string(), Value::String(config_text));
-                }
+                current.settings_config = settings_config;
             }
         }
 

@@ -311,9 +311,10 @@ cc-switch config path                # Show config file paths
 cc-switch config validate            # Validate config file
 
 # Common snippet (shared settings across providers)
+# Tries to refresh live config when applicable (`--apply` is kept only as a compatibility flag)
 cc-switch --app claude config common show
-cc-switch --app claude config common set --json '{"env":{"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC":1},"includeCoAuthoredBy":false}' --apply
-cc-switch --app claude config common clear --apply
+cc-switch --app claude config common set --snippet '{"env":{"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC":1},"includeCoAuthoredBy":false}'
+cc-switch --app claude config common clear
 
 # Backup
 cc-switch config backup              # Create backup (auto-named)

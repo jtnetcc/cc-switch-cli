@@ -797,13 +797,28 @@ fn mcp_add_form_switching_back_to_custom_clears_template_values() {
 }
 
 #[test]
-fn provider_add_form_common_config_json_merges_into_settings_for_preview_and_submit() {
+fn provider_add_form_common_config_json_merges_into_preview_but_not_raw_submit_payload() {
     let mut form = ProviderAddFormState::new(AppType::Claude);
     form.id.set("p1");
     form.name.set("Provider One");
     form.include_common_config = true;
     form.claude_base_url.set("https://provider.example");
     form.claude_api_key.set("sk-provider");
+
+    let raw = form.to_provider_json_value();
+    let raw_settings = raw
+        .get("settingsConfig")
+        .expect("settingsConfig should exist");
+
+    assert!(
+        raw_settings.get("alwaysThinkingEnabled").is_none(),
+        "raw submit payload should not include common snippet scalar keys"
+    );
+    assert_eq!(
+        raw_settings["env"]["ANTHROPIC_BASE_URL"], "https://provider.example",
+        "raw submit payload should still include provider-specific fields"
+    );
+    assert_eq!(raw_settings["env"]["ANTHROPIC_AUTH_TOKEN"], "sk-provider");
 
     let merged = form
         .to_provider_json_value_with_common_config(
@@ -827,6 +842,31 @@ fn provider_add_form_common_config_json_merges_into_settings_for_preview_and_sub
         "provider field should override common snippet value"
     );
     assert_eq!(settings["env"]["ANTHROPIC_AUTH_TOKEN"], "sk-provider");
+    assert_eq!(merged["meta"]["applyCommonConfig"], true);
+}
+
+#[test]
+fn provider_add_form_opencode_preview_matches_raw_submit_payload_when_common_snippet_exists() {
+    let mut form = ProviderAddFormState::new(AppType::OpenCode);
+    form.id.set("p1");
+    form.name.set("Provider One");
+    form.include_common_config = true;
+    form.opencode_npm_package.set("@ai-sdk/openai-compatible");
+    form.opencode_api_key.set("sk-provider");
+    form.opencode_base_url.set("https://provider.example/v1");
+    form.opencode_model_id.set("gpt-4.1-mini");
+
+    let raw = form.to_provider_json_value();
+    let preview = form
+        .to_provider_json_value_with_common_config(
+            r#"{
+                "apiKey": "sk-common",
+                "baseURL": "https://common.example/v1"
+            }"#,
+        )
+        .expect("OpenCode preview should accept object common snippet");
+
+    assert_eq!(preview, raw, "OpenCode preview should match the raw submit payload because live save does not apply the common snippet");
 }
 
 #[test]

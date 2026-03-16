@@ -35,6 +35,181 @@ impl Drop for EnvGuard {
     }
 }
 
+fn setup_switched_codex_state_with_managed_mcp() -> (TempDir, EnvGuard, AppState) {
+    let temp_home = TempDir::new().expect("create temp home");
+    let env = EnvGuard::set_home(temp_home.path());
+    std::fs::create_dir_all(crate::codex_config::get_codex_config_dir())
+        .expect("create ~/.codex (initialized)");
+
+    let mut config = MultiAppConfig::default();
+    config.ensure_app(&AppType::Codex);
+    {
+        let manager = config
+            .get_manager_mut(&AppType::Codex)
+            .expect("codex manager");
+        manager.current = "p1".to_string();
+        manager.providers.insert(
+            "p1".to_string(),
+            Provider::with_id(
+                "p1".to_string(),
+                "First".to_string(),
+                json!({ "config": "model_provider = \"first\"\nmodel = \"gpt-4\"\n\n[model_providers.first]\nbase_url = \"https://api.one.example/v1\"\n" }),
+                None,
+            ),
+        );
+        manager.providers.insert(
+            "p2".to_string(),
+            Provider::with_id(
+                "p2".to_string(),
+                "Second".to_string(),
+                json!({ "config": "model_provider = \"second\"\nmodel = \"gpt-4\"\n\n[model_providers.second]\nbase_url = \"https://api.two.example/v1\"\n" }),
+                None,
+            ),
+        );
+    }
+    config.mcp.servers = Some(std::collections::HashMap::new());
+    config.mcp.servers.as_mut().expect("mcp servers").insert(
+        "my_server".to_string(),
+        crate::app_config::McpServer {
+            id: "my_server".to_string(),
+            name: "My Server".to_string(),
+            server: json!({
+                "type": "stdio",
+                "command": "npx"
+            }),
+            apps: crate::app_config::McpApps {
+                claude: false,
+                codex: true,
+                gemini: false,
+                opencode: false,
+            },
+            description: None,
+            homepage: None,
+            docs: None,
+            tags: Vec::new(),
+        },
+    );
+
+    std::fs::write(
+        get_codex_config_path(),
+        r#"model_provider = "azure"
+model = "gpt-4"
+disable_response_storage = true
+
+[model_providers.azure]
+name = "Azure OpenAI"
+base_url = "https://azure.example/v1"
+wire_api = "responses"
+
+[mcp_servers.my_server]
+command = "npx"
+"#,
+    )
+    .expect("seed live config.toml");
+
+    let state = state_from_config(config);
+    ProviderService::switch(&state, AppType::Codex, "p2").expect("switch should succeed");
+
+    (temp_home, env, state)
+}
+
+fn setup_codex_state_with_broken_other_snapshot() -> (TempDir, EnvGuard, AppState) {
+    let temp_home = TempDir::new().expect("create temp home");
+    let env = EnvGuard::set_home(temp_home.path());
+    std::fs::create_dir_all(crate::codex_config::get_codex_config_dir())
+        .expect("create ~/.codex (initialized)");
+
+    let mut config = MultiAppConfig::default();
+    config.ensure_app(&AppType::Codex);
+    config.common_config_snippets.codex = Some("disable_response_storage = true".to_string());
+    {
+        let manager = config
+            .get_manager_mut(&AppType::Codex)
+            .expect("codex manager");
+        manager.current = "p1".to_string();
+        manager.providers.insert(
+            "p1".to_string(),
+            Provider::with_id(
+                "p1".to_string(),
+                "First".to_string(),
+                json!({
+                    "config": "model_provider = \"first\"\nmodel = \"gpt-4\"\n\n[model_providers.first]\nbase_url = \"https://api.one.example/v1\"\n"
+                }),
+                None,
+            ),
+        );
+        manager.providers.insert(
+            "p2".to_string(),
+            Provider::with_id(
+                "p2".to_string(),
+                "Broken legacy".to_string(),
+                json!({
+                    "config": "stale-config"
+                }),
+                None,
+            ),
+        );
+    }
+
+    std::fs::write(
+        get_codex_config_path(),
+        "disable_response_storage = true\nmodel_provider = \"first\"\nmodel = \"gpt-4\"\n\n[model_providers.first]\nbase_url = \"https://api.one.example/v1\"\n",
+    )
+    .expect("seed current live config");
+
+    let state = state_from_config(config);
+    (temp_home, env, state)
+}
+
+fn setup_codex_state_with_dangling_current_and_broken_other_snapshot(
+) -> (TempDir, EnvGuard, AppState) {
+    let temp_home = TempDir::new().expect("create temp home");
+    let env = EnvGuard::set_home(temp_home.path());
+    std::fs::create_dir_all(crate::codex_config::get_codex_config_dir())
+        .expect("create ~/.codex (initialized)");
+
+    let mut config = MultiAppConfig::default();
+    config.ensure_app(&AppType::Codex);
+    config.common_config_snippets.codex = Some("disable_response_storage = true".to_string());
+    {
+        let manager = config
+            .get_manager_mut(&AppType::Codex)
+            .expect("codex manager");
+        manager.current = "missing".to_string();
+        manager.providers.insert(
+            "p1".to_string(),
+            Provider::with_id(
+                "p1".to_string(),
+                "First".to_string(),
+                json!({
+                    "config": "model_provider = \"first\"\nmodel = \"gpt-4\"\n\n[model_providers.first]\nbase_url = \"https://api.one.example/v1\"\n"
+                }),
+                None,
+            ),
+        );
+        manager.providers.insert(
+            "p2".to_string(),
+            Provider::with_id(
+                "p2".to_string(),
+                "Broken legacy".to_string(),
+                json!({
+                    "config": "stale-config"
+                }),
+                None,
+            ),
+        );
+    }
+
+    std::fs::write(
+        get_codex_config_path(),
+        "disable_response_storage = true\nmodel_provider = \"first\"\nmodel = \"gpt-4\"\n\n[model_providers.first]\nbase_url = \"https://api.one.example/v1\"\n",
+    )
+    .expect("seed current live config");
+
+    let state = state_from_config(config);
+    (temp_home, env, state)
+}
+
 #[test]
 fn validate_provider_settings_allows_missing_auth_for_codex() {
     let mut provider = Provider::with_id(
@@ -62,6 +237,23 @@ fn validate_provider_settings_allows_missing_auth_for_codex_official_by_category
     provider.category = Some("official".to_string());
     ProviderService::validate_provider_settings(&AppType::Codex, &provider)
         .expect("Codex auth is optional for official providers (category=official)");
+}
+
+#[test]
+fn set_common_config_snippet_rejects_non_object_opencode_json() {
+    let state = state_from_config(MultiAppConfig::default());
+
+    let err = ProviderService::set_common_config_snippet(
+        &state,
+        AppType::OpenCode,
+        Some("[]".to_string()),
+    )
+    .expect_err("OpenCode common snippet should require a JSON object");
+
+    assert!(
+        err.to_string().contains("JSON object"),
+        "unexpected error: {err}"
+    );
 }
 
 #[test]
@@ -383,6 +575,97 @@ fn current_self_heals_when_current_provider_missing() {
 
 #[test]
 #[serial]
+fn updating_common_snippet_self_heals_dangling_current_and_refreshes_live() {
+    let temp_home = TempDir::new().expect("create temp home");
+    let _env = EnvGuard::set_home(temp_home.path());
+    std::fs::create_dir_all(crate::config::get_claude_config_dir())
+        .expect("create ~/.claude (initialized)");
+
+    let mut config = MultiAppConfig::default();
+    config.ensure_app(&AppType::Claude);
+    {
+        let manager = config
+            .get_manager_mut(&AppType::Claude)
+            .expect("claude manager");
+        manager.current = "missing".to_string();
+
+        let mut p1 = Provider::with_id(
+            "p1".to_string(),
+            "First".to_string(),
+            json!({
+                "env": {
+                    "ANTHROPIC_AUTH_TOKEN": "token1",
+                    "ANTHROPIC_BASE_URL": "https://claude.one"
+                }
+            }),
+            None,
+        );
+        p1.sort_index = Some(10);
+
+        let mut p2 = Provider::with_id(
+            "p2".to_string(),
+            "Second".to_string(),
+            json!({
+                "env": {
+                    "ANTHROPIC_AUTH_TOKEN": "token2",
+                    "ANTHROPIC_BASE_URL": "https://claude.two"
+                }
+            }),
+            None,
+        );
+        p2.sort_index = Some(0);
+
+        manager.providers.insert("p1".to_string(), p1);
+        manager.providers.insert("p2".to_string(), p2);
+    }
+
+    write_json_file(
+        &get_claude_settings_path(),
+        &json!({
+            "env": {
+                "ANTHROPIC_AUTH_TOKEN": "stale-token",
+                "ANTHROPIC_BASE_URL": "https://stale.example"
+            }
+        }),
+    )
+    .expect("seed stale live settings");
+
+    let state = state_from_config(config);
+
+    ProviderService::set_common_config_snippet(
+        &state,
+        AppType::Claude,
+        Some(r#"{"includeCoAuthoredBy":false}"#.to_string()),
+    )
+    .expect("update common snippet");
+
+    let cfg = state.config.read().expect("read config");
+    let manager = cfg.get_manager(&AppType::Claude).expect("claude manager");
+    assert_eq!(
+        manager.current, "p2",
+        "updating common snippet should self-heal dangling current before persisting"
+    );
+    drop(cfg);
+
+    let live: Value = read_json_file(&get_claude_settings_path()).expect("read live settings");
+    assert_eq!(
+        live.get("includeCoAuthoredBy").and_then(Value::as_bool),
+        Some(false),
+        "new common snippet should be applied to the healed current live settings"
+    );
+    let env = live
+        .get("env")
+        .and_then(Value::as_object)
+        .expect("live env should be object");
+    assert_eq!(
+        env.get("ANTHROPIC_AUTH_TOKEN").and_then(Value::as_str),
+        Some("token2"),
+        "live settings should refresh from the healed current provider instead of staying stale"
+    );
+}
+
+#[test]
+#[serial]
 fn common_config_snippet_is_merged_into_claude_settings_on_write() {
     let temp_home = TempDir::new().expect("create temp home");
     let _env = EnvGuard::set_home(temp_home.path());
@@ -498,6 +781,210 @@ fn common_config_snippet_can_be_disabled_per_provider_for_claude() {
 
 #[test]
 #[serial]
+fn provider_add_strips_common_snippet_before_claude_snapshot_persist() {
+    let temp_home = TempDir::new().expect("create temp home");
+    let _env = EnvGuard::set_home(temp_home.path());
+    std::fs::create_dir_all(crate::config::get_claude_config_dir())
+        .expect("create ~/.claude (initialized)");
+
+    let mut config = MultiAppConfig::default();
+    config.ensure_app(&AppType::Claude);
+    config.common_config_snippets.claude = Some(
+        r#"{"env":{"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC":1},"includeCoAuthoredBy":false}"#
+            .to_string(),
+    );
+
+    let state = state_from_config(config);
+
+    let provider = Provider::with_id(
+        "p1".to_string(),
+        "First".to_string(),
+        json!({
+            "includeCoAuthoredBy": false,
+            "env": {
+                "ANTHROPIC_AUTH_TOKEN": "token",
+                "ANTHROPIC_BASE_URL": "https://claude.example",
+                "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": 1
+            }
+        }),
+        None,
+    );
+
+    ProviderService::add(&state, AppType::Claude, provider).expect("add should succeed");
+
+    let cfg = state.config.read().expect("read config after add");
+    let provider = cfg
+        .get_manager(&AppType::Claude)
+        .expect("claude manager")
+        .providers
+        .get("p1")
+        .expect("p1 exists");
+    assert!(
+        provider
+            .settings_config
+            .get("includeCoAuthoredBy")
+            .is_none(),
+        "common top-level keys should be stripped before persisting Claude snapshot"
+    );
+    let env = provider
+        .settings_config
+        .get("env")
+        .and_then(Value::as_object)
+        .expect("provider env should be object");
+    assert!(
+        !env.contains_key("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"),
+        "common env keys should be stripped before persisting Claude snapshot"
+    );
+    assert_eq!(
+        env.get("ANTHROPIC_AUTH_TOKEN").and_then(Value::as_str),
+        Some("token"),
+        "provider-specific env keys should remain in the stored snapshot"
+    );
+}
+
+#[test]
+#[serial]
+fn provider_add_strips_legacy_claude_model_keys_from_common_snippet() {
+    let temp_home = TempDir::new().expect("create temp home");
+    let _env = EnvGuard::set_home(temp_home.path());
+    std::fs::create_dir_all(crate::config::get_claude_config_dir())
+        .expect("create ~/.claude (initialized)");
+
+    let mut config = MultiAppConfig::default();
+    config.ensure_app(&AppType::Claude);
+    config.common_config_snippets.claude =
+        Some(r#"{"env":{"ANTHROPIC_SMALL_FAST_MODEL":"claude-3-5-haiku-20241022"}}"#.to_string());
+
+    let state = state_from_config(config);
+
+    let provider = Provider::with_id(
+        "p1".to_string(),
+        "First".to_string(),
+        json!({
+            "env": {
+                "ANTHROPIC_AUTH_TOKEN": "token",
+                "ANTHROPIC_BASE_URL": "https://claude.example",
+                "ANTHROPIC_SMALL_FAST_MODEL": "claude-3-5-haiku-20241022"
+            }
+        }),
+        None,
+    );
+
+    ProviderService::add(&state, AppType::Claude, provider).expect("add should succeed");
+
+    let cfg = state.config.read().expect("read config after add");
+    let provider = cfg
+        .get_manager(&AppType::Claude)
+        .expect("claude manager")
+        .providers
+        .get("p1")
+        .expect("p1 exists");
+    let env = provider
+        .settings_config
+        .get("env")
+        .and_then(Value::as_object)
+        .expect("provider env should be object");
+
+    assert!(
+        !env.contains_key("ANTHROPIC_SMALL_FAST_MODEL"),
+        "legacy Claude common keys should not remain after provider normalization"
+    );
+    assert!(
+        !env.contains_key("ANTHROPIC_DEFAULT_HAIKU_MODEL"),
+        "normalized Claude common keys should be stripped before persisting the provider snapshot"
+    );
+    assert_eq!(
+        env.get("ANTHROPIC_AUTH_TOKEN").and_then(Value::as_str),
+        Some("token"),
+        "provider-specific env keys should remain in the stored snapshot"
+    );
+}
+
+#[test]
+#[serial]
+fn provider_update_strips_common_snippet_before_claude_snapshot_persist() {
+    let temp_home = TempDir::new().expect("create temp home");
+    let _env = EnvGuard::set_home(temp_home.path());
+    std::fs::create_dir_all(crate::config::get_claude_config_dir())
+        .expect("create ~/.claude (initialized)");
+
+    let mut config = MultiAppConfig::default();
+    config.ensure_app(&AppType::Claude);
+    config.common_config_snippets.claude = Some(
+        r#"{"env":{"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC":1},"includeCoAuthoredBy":false}"#
+            .to_string(),
+    );
+    {
+        let manager = config
+            .get_manager_mut(&AppType::Claude)
+            .expect("claude manager");
+        manager.current = "p1".to_string();
+        manager.providers.insert(
+            "p1".to_string(),
+            Provider::with_id(
+                "p1".to_string(),
+                "First".to_string(),
+                json!({
+                    "env": {
+                        "ANTHROPIC_AUTH_TOKEN": "token",
+                        "ANTHROPIC_BASE_URL": "https://claude.example"
+                    }
+                }),
+                None,
+            ),
+        );
+    }
+
+    let state = state_from_config(config);
+
+    let provider = Provider::with_id(
+        "p1".to_string(),
+        "First Updated".to_string(),
+        json!({
+            "includeCoAuthoredBy": false,
+            "env": {
+                "ANTHROPIC_AUTH_TOKEN": "token-updated",
+                "ANTHROPIC_BASE_URL": "https://claude.updated",
+                "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": 1
+            }
+        }),
+        None,
+    );
+
+    ProviderService::update(&state, AppType::Claude, provider).expect("update should succeed");
+
+    let cfg = state.config.read().expect("read config after update");
+    let provider = cfg
+        .get_manager(&AppType::Claude)
+        .expect("claude manager")
+        .providers
+        .get("p1")
+        .expect("p1 exists");
+    assert!(
+        provider
+            .settings_config
+            .get("includeCoAuthoredBy")
+            .is_none(),
+        "common top-level keys should be stripped before persisting updated Claude snapshot"
+    );
+    let env = provider
+        .settings_config
+        .get("env")
+        .and_then(Value::as_object)
+        .expect("provider env should be object");
+    assert!(
+        !env.contains_key("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"),
+        "common env keys should be stripped before persisting updated Claude snapshot"
+    );
+    assert_eq!(
+        env.get("ANTHROPIC_AUTH_TOKEN").and_then(Value::as_str),
+        Some("token-updated"),
+        "provider-specific env keys should remain in the updated stored snapshot"
+    );
+}
+
+#[test]
+#[serial]
 fn common_config_snippet_is_not_persisted_into_provider_snapshot_on_switch() {
     let temp_home = TempDir::new().expect("create temp home");
     let _env = EnvGuard::set_home(temp_home.path());
@@ -569,6 +1056,520 @@ fn common_config_snippet_is_not_persisted_into_provider_snapshot_on_switch() {
 
 #[test]
 #[serial]
+fn updating_common_snippet_removes_stale_fields_from_other_claude_provider_snapshots() {
+    let temp_home = TempDir::new().expect("create temp home");
+    let _env = EnvGuard::set_home(temp_home.path());
+    std::fs::create_dir_all(crate::config::get_claude_config_dir())
+        .expect("create ~/.claude (initialized)");
+
+    let old_snippet =
+        r#"{"env":{"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC":1},"includeCoAuthoredBy":false}"#;
+    let new_snippet = r#"{"env":{"CLAUDE_CODE_USE_BEDROCK":1},"includeCoAuthoredBy":true}"#;
+
+    let mut config = MultiAppConfig::default();
+    config.ensure_app(&AppType::Claude);
+    config.common_config_snippets.claude = Some(old_snippet.to_string());
+    {
+        let manager = config
+            .get_manager_mut(&AppType::Claude)
+            .expect("claude manager");
+        manager.current = "p1".to_string();
+        manager.providers.insert(
+            "p1".to_string(),
+            Provider::with_id(
+                "p1".to_string(),
+                "First".to_string(),
+                json!({
+                    "env": {
+                        "ANTHROPIC_AUTH_TOKEN": "token1",
+                        "ANTHROPIC_BASE_URL": "https://claude.one"
+                    }
+                }),
+                None,
+            ),
+        );
+        manager.providers.insert(
+            "p2".to_string(),
+            Provider::with_id(
+                "p2".to_string(),
+                "Second".to_string(),
+                json!({
+                    "includeCoAuthoredBy": false,
+                    "env": {
+                        "ANTHROPIC_AUTH_TOKEN": "token2",
+                        "ANTHROPIC_BASE_URL": "https://claude.two",
+                        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": 1
+                    }
+                }),
+                None,
+            ),
+        );
+    }
+
+    write_json_file(
+        &get_claude_settings_path(),
+        &json!({
+            "includeCoAuthoredBy": false,
+            "env": {
+                "ANTHROPIC_AUTH_TOKEN": "token1",
+                "ANTHROPIC_BASE_URL": "https://claude.one",
+                "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": 1
+            }
+        }),
+    )
+    .expect("seed current live settings");
+
+    let state = state_from_config(config);
+
+    ProviderService::set_common_config_snippet(
+        &state,
+        AppType::Claude,
+        Some(new_snippet.to_string()),
+    )
+    .expect("update common snippet");
+
+    let cfg = state.config.read().expect("read config after update");
+    assert_eq!(
+        cfg.common_config_snippets.claude.as_deref(),
+        Some(new_snippet),
+        "new snippet should be persisted into app config"
+    );
+
+    let p2_after = cfg
+        .get_manager(&AppType::Claude)
+        .expect("claude manager")
+        .providers
+        .get("p2")
+        .expect("p2 exists");
+    assert!(
+        p2_after
+            .settings_config
+            .get("includeCoAuthoredBy")
+            .is_none(),
+        "old top-level common keys should be stripped from other provider snapshots"
+    );
+    let p2_env = p2_after
+        .settings_config
+        .get("env")
+        .and_then(Value::as_object)
+        .expect("p2 env should be object");
+    assert!(
+        !p2_env.contains_key("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"),
+        "old common env keys should be stripped from other provider snapshots"
+    );
+    assert_eq!(
+        p2_env.get("ANTHROPIC_AUTH_TOKEN").and_then(Value::as_str),
+        Some("token2"),
+        "provider-specific env keys should remain after migration"
+    );
+    drop(cfg);
+
+    let live: Value = read_json_file(&get_claude_settings_path()).expect("read live settings");
+    assert_eq!(
+        live.get("includeCoAuthoredBy").and_then(Value::as_bool),
+        Some(true),
+        "current live settings should reflect the new common snippet"
+    );
+    let live_env = live
+        .get("env")
+        .and_then(Value::as_object)
+        .expect("live env should be object");
+    assert_eq!(
+        live_env
+            .get("CLAUDE_CODE_USE_BEDROCK")
+            .and_then(Value::as_i64),
+        Some(1),
+        "new common env key should be merged into current live settings"
+    );
+    assert!(
+        !live_env.contains_key("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"),
+        "old common env key should be removed from current live settings"
+    );
+    assert_eq!(
+        live_env.get("ANTHROPIC_AUTH_TOKEN").and_then(Value::as_str),
+        Some("token1"),
+        "current provider env should remain in live settings"
+    );
+}
+
+#[test]
+#[serial]
+fn updating_common_snippet_migrates_legacy_claude_model_keys_from_provider_snapshots() {
+    let temp_home = TempDir::new().expect("create temp home");
+    let _env = EnvGuard::set_home(temp_home.path());
+    std::fs::create_dir_all(crate::config::get_claude_config_dir())
+        .expect("create ~/.claude (initialized)");
+
+    let old_snippet = r#"{"env":{"ANTHROPIC_SMALL_FAST_MODEL":"claude-3-5-haiku-20241022"}}"#;
+    let new_snippet = r#"{"env":{"CLAUDE_CODE_USE_BEDROCK":1}}"#;
+
+    let mut config = MultiAppConfig::default();
+    config.ensure_app(&AppType::Claude);
+    config.common_config_snippets.claude = Some(old_snippet.to_string());
+    {
+        let manager = config
+            .get_manager_mut(&AppType::Claude)
+            .expect("claude manager");
+        manager.current = "p1".to_string();
+        manager.providers.insert(
+            "p1".to_string(),
+            Provider::with_id(
+                "p1".to_string(),
+                "First".to_string(),
+                json!({
+                    "env": {
+                        "ANTHROPIC_AUTH_TOKEN": "token1",
+                        "ANTHROPIC_BASE_URL": "https://claude.one"
+                    }
+                }),
+                None,
+            ),
+        );
+        manager.providers.insert(
+            "p2".to_string(),
+            Provider::with_id(
+                "p2".to_string(),
+                "Second".to_string(),
+                json!({
+                    "env": {
+                        "ANTHROPIC_AUTH_TOKEN": "token2",
+                        "ANTHROPIC_BASE_URL": "https://claude.two",
+                        "ANTHROPIC_DEFAULT_HAIKU_MODEL": "claude-3-5-haiku-20241022",
+                        "ANTHROPIC_DEFAULT_SONNET_MODEL": "claude-3-5-haiku-20241022",
+                        "ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-3-5-haiku-20241022"
+                    }
+                }),
+                None,
+            ),
+        );
+    }
+
+    write_json_file(
+        &get_claude_settings_path(),
+        &json!({
+            "env": {
+                "ANTHROPIC_AUTH_TOKEN": "token1",
+                "ANTHROPIC_BASE_URL": "https://claude.one"
+            }
+        }),
+    )
+    .expect("seed current live settings");
+
+    let state = state_from_config(config);
+
+    ProviderService::set_common_config_snippet(
+        &state,
+        AppType::Claude,
+        Some(new_snippet.to_string()),
+    )
+    .expect("update common snippet");
+
+    let cfg = state.config.read().expect("read config after update");
+    let p2_after = cfg
+        .get_manager(&AppType::Claude)
+        .expect("claude manager")
+        .providers
+        .get("p2")
+        .expect("p2 exists");
+    let p2_env = p2_after
+        .settings_config
+        .get("env")
+        .and_then(Value::as_object)
+        .expect("p2 env should be object");
+
+    assert!(
+        !p2_env.contains_key("ANTHROPIC_DEFAULT_HAIKU_MODEL"),
+        "legacy Claude common model keys should be stripped even when the stored snapshot was normalized"
+    );
+    assert!(
+        !p2_env.contains_key("ANTHROPIC_DEFAULT_SONNET_MODEL"),
+        "normalized Sonnet key derived from the legacy snippet should also be stripped"
+    );
+    assert!(
+        !p2_env.contains_key("ANTHROPIC_DEFAULT_OPUS_MODEL"),
+        "normalized Opus key derived from the legacy snippet should also be stripped"
+    );
+    assert_eq!(
+        p2_env.get("ANTHROPIC_AUTH_TOKEN").and_then(Value::as_str),
+        Some("token2"),
+        "provider-specific env keys should remain after migration"
+    );
+}
+
+#[test]
+#[serial]
+fn updating_common_snippet_skips_providers_with_apply_common_config_disabled() {
+    let temp_home = TempDir::new().expect("create temp home");
+    let _env = EnvGuard::set_home(temp_home.path());
+    std::fs::create_dir_all(crate::config::get_claude_config_dir())
+        .expect("create ~/.claude (initialized)");
+
+    let old_snippet =
+        r#"{"env":{"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC":1},"includeCoAuthoredBy":false}"#;
+    let new_snippet = r#"{"env":{"CLAUDE_CODE_USE_BEDROCK":1},"includeCoAuthoredBy":true}"#;
+
+    let mut config = MultiAppConfig::default();
+    config.ensure_app(&AppType::Claude);
+    config.common_config_snippets.claude = Some(old_snippet.to_string());
+    {
+        let manager = config
+            .get_manager_mut(&AppType::Claude)
+            .expect("claude manager");
+        manager.current = "p1".to_string();
+        manager.providers.insert(
+            "p1".to_string(),
+            Provider::with_id(
+                "p1".to_string(),
+                "First".to_string(),
+                json!({
+                    "env": {
+                        "ANTHROPIC_AUTH_TOKEN": "token1",
+                        "ANTHROPIC_BASE_URL": "https://claude.one"
+                    }
+                }),
+                None,
+            ),
+        );
+        manager.providers.insert(
+            "p2".to_string(),
+            serde_json::from_value(json!({
+                "id": "p2",
+                "name": "Second",
+                "settingsConfig": {
+                    "includeCoAuthoredBy": false,
+                    "env": {
+                        "ANTHROPIC_AUTH_TOKEN": "token2",
+                        "ANTHROPIC_BASE_URL": "https://claude.two",
+                        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": 1
+                    }
+                },
+                "meta": { "applyCommonConfig": false }
+            }))
+            .expect("parse provider p2"),
+        );
+    }
+
+    write_json_file(
+        &get_claude_settings_path(),
+        &json!({
+            "includeCoAuthoredBy": false,
+            "env": {
+                "ANTHROPIC_AUTH_TOKEN": "token1",
+                "ANTHROPIC_BASE_URL": "https://claude.one",
+                "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": 1
+            }
+        }),
+    )
+    .expect("seed current live settings");
+
+    let state = state_from_config(config);
+
+    ProviderService::set_common_config_snippet(
+        &state,
+        AppType::Claude,
+        Some(new_snippet.to_string()),
+    )
+    .expect("update common snippet");
+
+    let cfg = state.config.read().expect("read config after update");
+    let p2_after = cfg
+        .get_manager(&AppType::Claude)
+        .expect("claude manager")
+        .providers
+        .get("p2")
+        .expect("p2 exists");
+    assert_eq!(
+        p2_after
+            .settings_config
+            .get("includeCoAuthoredBy")
+            .and_then(Value::as_bool),
+        Some(false),
+        "applyCommonConfig=false provider should keep its stored top-level fields during migration"
+    );
+    let p2_env = p2_after
+        .settings_config
+        .get("env")
+        .and_then(Value::as_object)
+        .expect("p2 env should be object");
+    assert_eq!(
+        p2_env
+            .get("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC")
+            .and_then(Value::as_i64),
+        Some(1),
+        "applyCommonConfig=false provider should keep its stored common env keys during migration"
+    );
+    assert_eq!(
+        p2_env.get("ANTHROPIC_AUTH_TOKEN").and_then(Value::as_str),
+        Some("token2"),
+        "provider-specific env keys should remain untouched"
+    );
+}
+
+#[test]
+#[serial]
+fn setting_claude_common_snippet_normalizes_existing_provider_snapshot() {
+    let temp_home = TempDir::new().expect("create temp home");
+    let _env = EnvGuard::set_home(temp_home.path());
+    std::fs::create_dir_all(crate::config::get_claude_config_dir())
+        .expect("create ~/.claude (initialized)");
+
+    let new_snippet =
+        r#"{"includeCoAuthoredBy":false,"env":{"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC":1}}"#;
+
+    let mut config = MultiAppConfig::default();
+    config.ensure_app(&AppType::Claude);
+    {
+        let manager = config
+            .get_manager_mut(&AppType::Claude)
+            .expect("claude manager");
+        manager.current = "p1".to_string();
+        manager.providers.insert(
+            "p1".to_string(),
+            Provider::with_id(
+                "p1".to_string(),
+                "First".to_string(),
+                json!({
+                    "includeCoAuthoredBy": false,
+                    "env": {
+                        "ANTHROPIC_AUTH_TOKEN": "token1",
+                        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": 1
+                    }
+                }),
+                None,
+            ),
+        );
+    }
+
+    let state = state_from_config(config);
+
+    ProviderService::set_common_config_snippet(
+        &state,
+        AppType::Claude,
+        Some(new_snippet.to_string()),
+    )
+    .expect("set common snippet");
+
+    let cfg = state.config.read().expect("read config after update");
+    let provider = cfg
+        .get_manager(&AppType::Claude)
+        .expect("claude manager")
+        .providers
+        .get("p1")
+        .expect("p1 exists");
+
+    assert!(
+        provider
+            .settings_config
+            .get("includeCoAuthoredBy")
+            .is_none(),
+        "new Claude common top-level fields should be stripped from existing provider snapshots immediately"
+    );
+    let env = provider
+        .settings_config
+        .get("env")
+        .and_then(Value::as_object)
+        .expect("stored claude env should be object");
+    assert!(
+        !env.contains_key("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"),
+        "new Claude common env fields should be stripped from existing provider snapshots immediately"
+    );
+    assert_eq!(
+        env.get("ANTHROPIC_AUTH_TOKEN").and_then(Value::as_str),
+        Some("token1"),
+        "provider-specific Claude env should remain after normalization"
+    );
+}
+
+#[test]
+#[serial]
+fn clearing_claude_common_snippet_tolerates_invalid_stored_snippet() {
+    let temp_home = TempDir::new().expect("create temp home");
+    let _env = EnvGuard::set_home(temp_home.path());
+    std::fs::create_dir_all(crate::config::get_claude_config_dir())
+        .expect("create ~/.claude (initialized)");
+
+    let invalid_old_snippet = r#"{"env":{"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC":1}"#;
+
+    let mut config = MultiAppConfig::default();
+    config.ensure_app(&AppType::Claude);
+    config.common_config_snippets.claude = Some(invalid_old_snippet.to_string());
+    {
+        let manager = config
+            .get_manager_mut(&AppType::Claude)
+            .expect("claude manager");
+        manager.current = "p1".to_string();
+        manager.providers.insert(
+            "p1".to_string(),
+            Provider::with_id(
+                "p1".to_string(),
+                "First".to_string(),
+                json!({
+                    "env": {
+                        "ANTHROPIC_AUTH_TOKEN": "token1",
+                        "ANTHROPIC_BASE_URL": "https://claude.one"
+                    }
+                }),
+                None,
+            ),
+        );
+        manager.providers.insert(
+            "p2".to_string(),
+            Provider::with_id(
+                "p2".to_string(),
+                "Second".to_string(),
+                json!({
+                    "env": {
+                        "ANTHROPIC_AUTH_TOKEN": "token2",
+                        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": 1
+                    }
+                }),
+                None,
+            ),
+        );
+    }
+
+    write_json_file(
+        &get_claude_settings_path(),
+        &json!({
+            "env": {
+                "ANTHROPIC_AUTH_TOKEN": "token1",
+                "ANTHROPIC_BASE_URL": "https://claude.one",
+                "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": 1
+            }
+        }),
+    )
+    .expect("seed current live settings");
+
+    let state = state_from_config(config);
+
+    ProviderService::clear_common_config_snippet(&state, AppType::Claude)
+        .expect("clear should recover from invalid stored snippet");
+
+    let cfg = state.config.read().expect("read config after clear");
+    assert_eq!(
+        cfg.common_config_snippets.claude, None,
+        "invalid stored snippet should not block clearing the saved common snippet"
+    );
+    drop(cfg);
+
+    let live: Value = read_json_file(&get_claude_settings_path()).expect("read live settings");
+    let env = live
+        .get("env")
+        .and_then(Value::as_object)
+        .expect("live env should be object");
+    assert!(
+        !env.contains_key("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"),
+        "clearing should rewrite live settings from the provider snapshot even when the old snippet is invalid"
+    );
+    assert_eq!(
+        env.get("ANTHROPIC_AUTH_TOKEN").and_then(Value::as_str),
+        Some("token1"),
+        "provider-specific Claude env should remain after recovery"
+    );
+}
+
+#[test]
+#[serial]
 fn common_config_snippet_is_merged_into_codex_config_on_write() {
     let temp_home = TempDir::new().expect("create temp home");
     let _env = EnvGuard::set_home(temp_home.path());
@@ -597,6 +1598,155 @@ fn common_config_snippet_is_merged_into_codex_config_on_write() {
     assert!(
         live_text.contains("disable_response_storage = true"),
         "common snippet should be merged into config.toml"
+    );
+}
+
+#[test]
+#[serial]
+fn provider_add_strips_common_snippet_before_codex_snapshot_persist() {
+    let temp_home = TempDir::new().expect("create temp home");
+    let _env = EnvGuard::set_home(temp_home.path());
+    std::fs::create_dir_all(crate::codex_config::get_codex_config_dir())
+        .expect("create ~/.codex (initialized)");
+
+    let mut config = MultiAppConfig::default();
+    config.ensure_app(&AppType::Codex);
+    config.common_config_snippets.codex = Some("disable_response_storage = true".to_string());
+
+    let state = state_from_config(config);
+
+    let provider = Provider::with_id(
+        "p1".to_string(),
+        "First".to_string(),
+        json!({
+            "auth": { "OPENAI_API_KEY": "sk-test" },
+            "config": "disable_response_storage = true\nmodel_provider = \"first\"\nmodel = \"gpt-5.2-codex\"\n\n[model_providers.first]\nbase_url = \"https://api.example/v1\"\nwire_api = \"responses\"\nrequires_openai_auth = true\n"
+        }),
+        None,
+    );
+
+    ProviderService::add(&state, AppType::Codex, provider).expect("add should succeed");
+
+    let cfg = state.config.read().expect("read config after add");
+    let provider = cfg
+        .get_manager(&AppType::Codex)
+        .expect("codex manager")
+        .providers
+        .get("p1")
+        .expect("p1 exists");
+    let stored_config = provider
+        .settings_config
+        .get("config")
+        .and_then(Value::as_str)
+        .expect("stored codex config should be string");
+
+    assert!(
+        !stored_config.contains("disable_response_storage = true"),
+        "common Codex keys should be stripped before persisting provider snapshot"
+    );
+    assert!(
+        stored_config.contains("base_url = \"https://api.example/v1\""),
+        "provider-specific Codex config should remain in the stored snapshot"
+    );
+}
+
+#[test]
+fn strip_codex_common_config_keeps_unmatched_nested_table_siblings() {
+    let stored_config = r#"disable_response_storage = true
+model_provider = "first"
+model = "gpt-5"
+
+[mcp_servers.shared]
+command = "npx"
+
+[mcp_servers.provider_only]
+command = "uvx"
+
+[model_providers.first]
+base_url = "https://api.example/v1"
+"#;
+    let common_snippet = r#"disable_response_storage = true
+
+[mcp_servers.shared]
+command = "npx"
+"#;
+
+    let stripped =
+        strip_codex_common_config_from_full_text(stored_config, common_snippet).expect("strip");
+
+    assert!(
+        !stripped.contains("[mcp_servers.shared]"),
+        "matched nested common table should be removed"
+    );
+    assert!(
+        stripped.contains("[mcp_servers.provider_only]"),
+        "unmatched nested siblings should remain in the stored snapshot"
+    );
+    assert!(
+        stripped.contains("command = \"uvx\""),
+        "provider-specific nested table contents should remain"
+    );
+}
+
+#[test]
+fn strip_codex_common_config_keeps_provider_specific_value_in_shared_nested_table() {
+    let stored_config = r#"disable_response_storage = true
+model_provider = "first"
+model = "gpt-5"
+
+[mcp_servers.shared]
+command = "uvx"
+
+[model_providers.first]
+base_url = "https://api.example/v1"
+"#;
+    let common_snippet = r#"disable_response_storage = true
+
+[mcp_servers.shared]
+command = "npx"
+"#;
+
+    let stripped =
+        strip_codex_common_config_from_full_text(stored_config, common_snippet).expect("strip");
+
+    assert!(
+        stripped.contains("[mcp_servers.shared]"),
+        "shared nested table should remain when provider value differs from common snippet"
+    );
+    assert!(
+        stripped.contains("command = \"uvx\""),
+        "provider-specific value in the same nested table should not be stripped"
+    );
+}
+
+#[test]
+#[serial]
+fn provider_add_rejects_invalid_codex_common_snippet_during_storage_normalization() {
+    let temp_home = TempDir::new().expect("create temp home");
+    let _env = EnvGuard::set_home(temp_home.path());
+
+    let mut config = MultiAppConfig::default();
+    config.ensure_app(&AppType::Codex);
+    config.common_config_snippets.codex = Some("disable_response_storage = [".to_string());
+
+    let state = state_from_config(config);
+
+    let provider = Provider::with_id(
+        "p1".to_string(),
+        "First".to_string(),
+        json!({
+            "auth": { "OPENAI_API_KEY": "sk-test" },
+            "config": "model_provider = \"first\"\nmodel = \"gpt-5.2-codex\"\n\n[model_providers.first]\nbase_url = \"https://api.example/v1\"\nwire_api = \"responses\"\nrequires_openai_auth = true\n"
+        }),
+        None,
+    );
+
+    let err = ProviderService::add(&state, AppType::Codex, provider)
+        .expect_err("invalid common snippet should fail instead of being silently ignored");
+
+    assert!(
+        err.to_string().contains("Common config TOML parse error"),
+        "error should surface invalid common snippet parse failure"
     );
 }
 
@@ -695,6 +1845,410 @@ base_url = "http://localhost:8080"
 
 #[test]
 #[serial]
+fn setting_codex_common_snippet_after_switch_preserves_mcp_servers() {
+    let (_temp_home, _env, state) = setup_switched_codex_state_with_managed_mcp();
+
+    ProviderService::set_common_config_snippet(
+        &state,
+        AppType::Codex,
+        Some("network_access = \"restricted\"".to_string()),
+    )
+    .expect("set common snippet");
+
+    let live_text = std::fs::read_to_string(get_codex_config_path()).expect("read config.toml");
+
+    assert!(
+        live_text.contains("network_access = \"restricted\""),
+        "new common snippet should be written to live config"
+    );
+    assert!(
+        live_text.contains("[mcp_servers.my_server]"),
+        "managed MCP table should remain after rewriting live config"
+    );
+    assert!(
+        live_text.contains("command = \"npx\""),
+        "managed MCP contents should remain after rewriting live config"
+    );
+}
+
+#[test]
+#[serial]
+fn clearing_codex_common_snippet_after_switch_preserves_mcp_servers() {
+    let (_temp_home, _env, state) = setup_switched_codex_state_with_managed_mcp();
+
+    ProviderService::clear_common_config_snippet(&state, AppType::Codex)
+        .expect("clear common snippet");
+
+    let live_text = std::fs::read_to_string(get_codex_config_path()).expect("read config.toml");
+
+    assert!(
+        !live_text.contains("disable_response_storage = true"),
+        "clearing should remove the extracted common snippet from live config"
+    );
+    assert!(
+        live_text.contains("[mcp_servers.my_server]"),
+        "managed MCP table should remain after clearing the common snippet"
+    );
+    assert!(
+        live_text.contains("command = \"npx\""),
+        "managed MCP contents should remain after clearing the common snippet"
+    );
+}
+
+#[test]
+#[serial]
+fn setting_codex_common_snippet_skips_broken_other_provider_snapshot() {
+    let (_temp_home, _env, state) = setup_codex_state_with_broken_other_snapshot();
+
+    ProviderService::set_common_config_snippet(
+        &state,
+        AppType::Codex,
+        Some("network_access = \"restricted\"".to_string()),
+    )
+    .expect("set should tolerate broken non-current snapshot");
+
+    let cfg = state.config.read().expect("read config after set");
+    assert_eq!(
+        cfg.common_config_snippets.codex.as_deref(),
+        Some("network_access = \"restricted\""),
+        "new common snippet should still be persisted"
+    );
+    let broken = cfg
+        .get_manager(&AppType::Codex)
+        .expect("codex manager")
+        .providers
+        .get("p2")
+        .expect("broken snapshot should remain");
+    assert_eq!(
+        broken.settings_config.get("config").and_then(Value::as_str),
+        Some("stale-config"),
+        "broken legacy snapshot should be left untouched instead of aborting the transaction"
+    );
+    drop(cfg);
+
+    let live_text = std::fs::read_to_string(get_codex_config_path()).expect("read config.toml");
+    assert!(
+        live_text.contains("network_access = \"restricted\""),
+        "current live config should still refresh to the new common snippet"
+    );
+    assert!(
+        !live_text.contains("disable_response_storage = true"),
+        "old common snippet should be removed from the live config"
+    );
+}
+
+#[test]
+#[serial]
+fn clearing_codex_common_snippet_skips_broken_other_provider_snapshot() {
+    let (_temp_home, _env, state) = setup_codex_state_with_broken_other_snapshot();
+
+    ProviderService::clear_common_config_snippet(&state, AppType::Codex)
+        .expect("clear should tolerate broken non-current snapshot");
+
+    let cfg = state.config.read().expect("read config after clear");
+    assert!(
+        cfg.common_config_snippets.codex.is_none(),
+        "clearing should still remove the saved common snippet"
+    );
+    let broken = cfg
+        .get_manager(&AppType::Codex)
+        .expect("codex manager")
+        .providers
+        .get("p2")
+        .expect("broken snapshot should remain");
+    assert_eq!(
+        broken.settings_config.get("config").and_then(Value::as_str),
+        Some("stale-config"),
+        "broken legacy snapshot should be left untouched instead of aborting the clear path"
+    );
+    drop(cfg);
+
+    let live_text = std::fs::read_to_string(get_codex_config_path()).expect("read config.toml");
+    assert!(
+        !live_text.contains("disable_response_storage = true"),
+        "clearing should still remove the old common snippet from the live config"
+    );
+    assert!(
+        live_text.contains("base_url = \"https://api.one.example/v1\""),
+        "current provider config should remain after clearing the common snippet"
+    );
+}
+
+#[test]
+#[serial]
+fn setting_codex_common_snippet_self_heals_dangling_current_before_skipping_broken_other_snapshot()
+{
+    let (_temp_home, _env, state) =
+        setup_codex_state_with_dangling_current_and_broken_other_snapshot();
+
+    ProviderService::set_common_config_snippet(
+        &state,
+        AppType::Codex,
+        Some("network_access = \"restricted\"".to_string()),
+    )
+    .expect("set should self-heal dangling current before normalizing snapshots");
+
+    let cfg = state.config.read().expect("read config after set");
+    assert_eq!(
+        cfg.common_config_snippets.codex.as_deref(),
+        Some("network_access = \"restricted\""),
+        "new common snippet should still be persisted"
+    );
+    let manager = cfg.get_manager(&AppType::Codex).expect("codex manager");
+    assert_eq!(
+        manager.current, "p1",
+        "dangling current should self-heal to the fallback provider before snapshot normalization"
+    );
+    let broken = manager
+        .providers
+        .get("p2")
+        .expect("broken snapshot should remain");
+    assert_eq!(
+        broken.settings_config.get("config").and_then(Value::as_str),
+        Some("stale-config"),
+        "broken legacy snapshot should still be left untouched"
+    );
+    drop(cfg);
+
+    let live_text = std::fs::read_to_string(get_codex_config_path()).expect("read config.toml");
+    assert!(
+        live_text.contains("network_access = \"restricted\""),
+        "self-healed current provider should still refresh the live config with the new common snippet"
+    );
+    assert!(
+        !live_text.contains("disable_response_storage = true"),
+        "old common snippet should be removed from the live config"
+    );
+    assert!(
+        live_text.contains("base_url = \"https://api.one.example/v1\""),
+        "live config should be rebuilt from the healed current provider"
+    );
+}
+
+#[test]
+#[serial]
+fn clearing_codex_common_snippet_self_heals_dangling_current_before_skipping_broken_other_snapshot()
+{
+    let (_temp_home, _env, state) =
+        setup_codex_state_with_dangling_current_and_broken_other_snapshot();
+
+    ProviderService::clear_common_config_snippet(&state, AppType::Codex)
+        .expect("clear should self-heal dangling current before normalizing snapshots");
+
+    let cfg = state.config.read().expect("read config after clear");
+    assert!(
+        cfg.common_config_snippets.codex.is_none(),
+        "clearing should still remove the saved common snippet"
+    );
+    let manager = cfg.get_manager(&AppType::Codex).expect("codex manager");
+    assert_eq!(
+        manager.current, "p1",
+        "dangling current should self-heal to the fallback provider before clearing snapshots"
+    );
+    let broken = manager
+        .providers
+        .get("p2")
+        .expect("broken snapshot should remain");
+    assert_eq!(
+        broken.settings_config.get("config").and_then(Value::as_str),
+        Some("stale-config"),
+        "broken legacy snapshot should still be left untouched during clear"
+    );
+    drop(cfg);
+
+    let live_text = std::fs::read_to_string(get_codex_config_path()).expect("read config.toml");
+    assert!(
+        !live_text.contains("disable_response_storage = true"),
+        "clearing should still remove the old common snippet from the live config"
+    );
+    assert!(
+        live_text.contains("base_url = \"https://api.one.example/v1\""),
+        "live config should be rebuilt from the healed current provider during clear"
+    );
+}
+
+#[test]
+#[serial]
+fn codex_switch_auto_extracted_common_normalizes_other_existing_provider_snapshots() {
+    let temp_home = TempDir::new().expect("create temp home");
+    let _env = EnvGuard::set_home(temp_home.path());
+
+    let mut config = MultiAppConfig::default();
+    config.ensure_app(&AppType::Codex);
+    {
+        let manager = config
+            .get_manager_mut(&AppType::Codex)
+            .expect("codex manager");
+        manager.current = "p1".to_string();
+        manager.providers.insert(
+            "p1".to_string(),
+            Provider::with_id(
+                "p1".to_string(),
+                "First".to_string(),
+                json!({
+                    "config": "disable_response_storage = true\nmodel_provider = \"first\"\nmodel = \"gpt-4\"\n\n[model_providers.first]\nbase_url = \"https://api.one.example/v1\"\n"
+                }),
+                None,
+            ),
+        );
+        manager.providers.insert(
+            "p2".to_string(),
+            Provider::with_id(
+                "p2".to_string(),
+                "Second".to_string(),
+                json!({
+                    "config": "disable_response_storage = true\nmodel_provider = \"second\"\nmodel = \"gpt-4\"\n\n[model_providers.second]\nbase_url = \"https://api.two.example/v1\"\n"
+                }),
+                None,
+            ),
+        );
+        manager.providers.insert(
+            "p3".to_string(),
+            Provider::with_id(
+                "p3".to_string(),
+                "Third".to_string(),
+                json!({
+                    "config": "disable_response_storage = true\nmodel_provider = \"third\"\nmodel = \"gpt-4\"\n\n[model_providers.third]\nbase_url = \"https://api.three.example/v1\"\n"
+                }),
+                None,
+            ),
+        );
+    }
+
+    let state = state_from_config(config);
+
+    let config_path = get_codex_config_path();
+    if let Some(parent) = config_path.parent() {
+        std::fs::create_dir_all(parent).expect("create codex dir");
+    }
+    std::fs::write(
+        &config_path,
+        "disable_response_storage = true\nmodel_provider = \"first\"\nmodel = \"gpt-4\"\n\n[model_providers.first]\nbase_url = \"https://api.one.example/v1\"\n",
+    )
+    .expect("seed config.toml");
+
+    ProviderService::switch(&state, AppType::Codex, "p2").expect("switch should succeed");
+
+    let cfg = state.config.read().expect("read config after switch");
+    assert_eq!(
+        cfg.common_config_snippets.codex.as_deref(),
+        Some("disable_response_storage = true"),
+        "switch should persist the auto-extracted common snippet"
+    );
+
+    let p3_stored = cfg
+        .get_manager(&AppType::Codex)
+        .expect("codex manager")
+        .providers
+        .get("p3")
+        .expect("p3 exists")
+        .settings_config
+        .get("config")
+        .and_then(Value::as_str)
+        .expect("stored codex config should be string");
+
+    assert!(
+        !p3_stored.contains("disable_response_storage = true"),
+        "other existing provider snapshots should also be normalized after common snippet is auto-extracted"
+    );
+    assert!(
+        p3_stored.contains("base_url = \"https://api.three.example/v1\""),
+        "provider-specific config should remain after auto-normalization"
+    );
+}
+
+#[test]
+#[serial]
+fn codex_switch_auto_extracted_common_skips_unparseable_other_provider_snapshots() {
+    let temp_home = TempDir::new().expect("create temp home");
+    let _env = EnvGuard::set_home(temp_home.path());
+
+    let mut config = MultiAppConfig::default();
+    config.ensure_app(&AppType::Codex);
+    {
+        let manager = config
+            .get_manager_mut(&AppType::Codex)
+            .expect("codex manager");
+        manager.current = "p1".to_string();
+        manager.providers.insert(
+            "p1".to_string(),
+            Provider::with_id(
+                "p1".to_string(),
+                "First".to_string(),
+                json!({
+                    "config": "disable_response_storage = true\nmodel_provider = \"first\"\nmodel = \"gpt-4\"\n\n[model_providers.first]\nbase_url = \"https://api.one.example/v1\"\n"
+                }),
+                None,
+            ),
+        );
+        manager.providers.insert(
+            "p2".to_string(),
+            Provider::with_id(
+                "p2".to_string(),
+                "Second".to_string(),
+                json!({
+                    "config": "disable_response_storage = true\nmodel_provider = \"second\"\nmodel = \"gpt-4\"\n\n[model_providers.second]\nbase_url = \"https://api.two.example/v1\"\n"
+                }),
+                None,
+            ),
+        );
+        manager.providers.insert(
+            "p3".to_string(),
+            Provider::with_id(
+                "p3".to_string(),
+                "Broken legacy".to_string(),
+                json!({
+                    "config": "stale-config"
+                }),
+                None,
+            ),
+        );
+    }
+
+    let state = state_from_config(config);
+
+    let config_path = get_codex_config_path();
+    if let Some(parent) = config_path.parent() {
+        std::fs::create_dir_all(parent).expect("create codex dir");
+    }
+    std::fs::write(
+        &config_path,
+        "disable_response_storage = true\nmodel_provider = \"first\"\nmodel = \"gpt-4\"\n\n[model_providers.first]\nbase_url = \"https://api.one.example/v1\"\n",
+    )
+    .expect("seed config.toml");
+
+    ProviderService::switch(&state, AppType::Codex, "p2")
+        .expect("switch should skip broken legacy snapshots");
+
+    let cfg = state.config.read().expect("read config after switch");
+    assert_eq!(
+        cfg.common_config_snippets.codex.as_deref(),
+        Some("disable_response_storage = true"),
+        "switch should still persist the auto-extracted common snippet"
+    );
+
+    let manager = cfg.get_manager(&AppType::Codex).expect("codex manager");
+    assert_eq!(
+        manager.current, "p2",
+        "current provider should still update"
+    );
+
+    let p3_stored = manager
+        .providers
+        .get("p3")
+        .expect("p3 exists")
+        .settings_config
+        .get("config")
+        .and_then(Value::as_str)
+        .expect("stored codex config should be string");
+    assert_eq!(
+        p3_stored, "stale-config",
+        "broken legacy snapshot should be left untouched instead of blocking the switch"
+    );
+}
+
+#[test]
+#[serial]
 fn common_config_snippet_can_be_disabled_per_provider_for_codex() {
     let temp_home = TempDir::new().expect("create temp home");
     let _env = EnvGuard::set_home(temp_home.path());
@@ -749,6 +2303,291 @@ fn common_config_snippet_can_be_disabled_per_provider_for_codex() {
     assert!(
         live_text.contains("base_url = \"https://api.two.example/v1\""),
         "provider-specific config should be written"
+    );
+}
+
+#[test]
+#[serial]
+fn updating_common_snippet_removes_stale_fields_from_other_codex_provider_snapshots() {
+    let temp_home = TempDir::new().expect("create temp home");
+    let _env = EnvGuard::set_home(temp_home.path());
+    std::fs::create_dir_all(crate::codex_config::get_codex_config_dir())
+        .expect("create ~/.codex (initialized)");
+
+    let old_snippet = "disable_response_storage = true";
+    let new_snippet = "network_access = \"restricted\"";
+
+    let mut config = MultiAppConfig::default();
+    config.ensure_app(&AppType::Codex);
+    config.common_config_snippets.codex = Some(old_snippet.to_string());
+    {
+        let manager = config
+            .get_manager_mut(&AppType::Codex)
+            .expect("codex manager");
+        manager.current = "p1".to_string();
+        manager.providers.insert(
+            "p1".to_string(),
+            Provider::with_id(
+                "p1".to_string(),
+                "First".to_string(),
+                json!({
+                    "config": "model_provider = \"first\"\nmodel = \"gpt-4\"\n\n[model_providers.first]\nbase_url = \"https://api.one.example/v1\"\n"
+                }),
+                None,
+            ),
+        );
+        manager.providers.insert(
+            "p2".to_string(),
+            Provider::with_id(
+                "p2".to_string(),
+                "Second".to_string(),
+                json!({
+                    "config": "disable_response_storage = true\nmodel_provider = \"second\"\nmodel = \"gpt-4\"\n\n[model_providers.second]\nbase_url = \"https://api.two.example/v1\"\n"
+                }),
+                None,
+            ),
+        );
+    }
+
+    std::fs::write(
+        get_codex_config_path(),
+        "disable_response_storage = true\nmodel_provider = \"first\"\nmodel = \"gpt-4\"\n\n[model_providers.first]\nbase_url = \"https://api.one.example/v1\"\n",
+    )
+    .expect("seed current live config");
+
+    let state = state_from_config(config);
+
+    ProviderService::set_common_config_snippet(
+        &state,
+        AppType::Codex,
+        Some(new_snippet.to_string()),
+    )
+    .expect("update common snippet");
+
+    let cfg = state.config.read().expect("read config after update");
+    let p2_after = cfg
+        .get_manager(&AppType::Codex)
+        .expect("codex manager")
+        .providers
+        .get("p2")
+        .expect("p2 exists");
+    let stored_config = p2_after
+        .settings_config
+        .get("config")
+        .and_then(Value::as_str)
+        .expect("stored codex config should be string");
+
+    assert!(
+        !stored_config.contains("disable_response_storage = true"),
+        "old common Codex keys should be stripped from other provider snapshots"
+    );
+    assert!(
+        stored_config.contains("base_url = \"https://api.two.example/v1\""),
+        "provider-specific Codex config should remain after migration"
+    );
+    drop(cfg);
+
+    let live_text = std::fs::read_to_string(get_codex_config_path()).expect("read config.toml");
+    assert!(
+        live_text.contains("network_access = \"restricted\""),
+        "current live config should reflect the new common snippet"
+    );
+    assert!(
+        !live_text.contains("disable_response_storage = true"),
+        "current live config should no longer carry the old common snippet"
+    );
+}
+
+#[test]
+#[serial]
+fn setting_codex_common_snippet_normalizes_existing_provider_snapshot() {
+    let temp_home = TempDir::new().expect("create temp home");
+    let _env = EnvGuard::set_home(temp_home.path());
+    std::fs::create_dir_all(crate::codex_config::get_codex_config_dir())
+        .expect("create ~/.codex (initialized)");
+
+    let new_snippet = "disable_response_storage = true";
+
+    let mut config = MultiAppConfig::default();
+    config.ensure_app(&AppType::Codex);
+    {
+        let manager = config
+            .get_manager_mut(&AppType::Codex)
+            .expect("codex manager");
+        manager.current = "p1".to_string();
+        manager.providers.insert(
+            "p1".to_string(),
+            Provider::with_id(
+                "p1".to_string(),
+                "First".to_string(),
+                json!({
+                    "config": "disable_response_storage = true\nmodel_provider = \"first\"\nmodel = \"gpt-4\"\n\n[model_providers.first]\nbase_url = \"https://api.one.example/v1\"\n"
+                }),
+                None,
+            ),
+        );
+    }
+
+    let state = state_from_config(config);
+
+    ProviderService::set_common_config_snippet(
+        &state,
+        AppType::Codex,
+        Some(new_snippet.to_string()),
+    )
+    .expect("set common snippet");
+
+    let cfg = state.config.read().expect("read config after update");
+    let stored_config = cfg
+        .get_manager(&AppType::Codex)
+        .expect("codex manager")
+        .providers
+        .get("p1")
+        .expect("p1 exists")
+        .settings_config
+        .get("config")
+        .and_then(Value::as_str)
+        .expect("stored codex config should be string");
+
+    assert!(
+        !stored_config.contains("disable_response_storage = true"),
+        "new Codex common fields should be stripped from existing provider snapshots immediately"
+    );
+    assert!(
+        stored_config.contains("base_url = \"https://api.one.example/v1\""),
+        "provider-specific Codex config should remain after normalization"
+    );
+}
+
+#[test]
+#[serial]
+fn replacing_codex_common_snippet_tolerates_invalid_stored_snippet() {
+    let temp_home = TempDir::new().expect("create temp home");
+    let _env = EnvGuard::set_home(temp_home.path());
+    std::fs::create_dir_all(crate::codex_config::get_codex_config_dir())
+        .expect("create ~/.codex (initialized)");
+
+    let invalid_old_snippet = "disable_response_storage = true\n[";
+    let new_snippet = "network_access = \"restricted\"";
+
+    let mut config = MultiAppConfig::default();
+    config.ensure_app(&AppType::Codex);
+    config.common_config_snippets.codex = Some(invalid_old_snippet.to_string());
+    {
+        let manager = config
+            .get_manager_mut(&AppType::Codex)
+            .expect("codex manager");
+        manager.current = "p1".to_string();
+        manager.providers.insert(
+            "p1".to_string(),
+            Provider::with_id(
+                "p1".to_string(),
+                "First".to_string(),
+                json!({
+                    "config": "model_provider = \"first\"\nmodel = \"gpt-4\"\n\n[model_providers.first]\nbase_url = \"https://api.one.example/v1\"\n"
+                }),
+                None,
+            ),
+        );
+        manager.providers.insert(
+            "p2".to_string(),
+            Provider::with_id(
+                "p2".to_string(),
+                "Second".to_string(),
+                json!({
+                    "config": "disable_response_storage = true\nmodel_provider = \"second\"\nmodel = \"gpt-4\"\n\n[model_providers.second]\nbase_url = \"https://api.two.example/v1\"\n"
+                }),
+                None,
+            ),
+        );
+    }
+
+    std::fs::write(
+        get_codex_config_path(),
+        "disable_response_storage = true\nmodel_provider = \"first\"\nmodel = \"gpt-4\"\n\n[model_providers.first]\nbase_url = \"https://api.one.example/v1\"\n",
+    )
+    .expect("seed current live config");
+
+    let state = state_from_config(config);
+
+    ProviderService::set_common_config_snippet(
+        &state,
+        AppType::Codex,
+        Some(new_snippet.to_string()),
+    )
+    .expect("replace should recover from invalid stored snippet");
+
+    let cfg = state.config.read().expect("read config after replace");
+    assert_eq!(
+        cfg.common_config_snippets.codex.as_deref(),
+        Some(new_snippet),
+        "invalid stored snippet should not block replacing the saved common snippet"
+    );
+    drop(cfg);
+
+    let live_text = std::fs::read_to_string(get_codex_config_path()).expect("read config.toml");
+    assert!(
+        live_text.contains("network_access = \"restricted\""),
+        "replacing should write the new common snippet into the live Codex config"
+    );
+    assert!(
+        !live_text.contains("disable_response_storage = true"),
+        "replacing should rewrite live Codex config from the provider snapshot even when the old snippet is invalid"
+    );
+}
+
+#[test]
+#[serial]
+fn import_default_config_strips_codex_common_snippet_before_persisting_snapshot() {
+    let temp_home = TempDir::new().expect("create temp home");
+    let _env = EnvGuard::set_home(temp_home.path());
+    std::fs::create_dir_all(crate::codex_config::get_codex_config_dir())
+        .expect("create ~/.codex (initialized)");
+
+    write_json_file(
+        &get_codex_auth_path(),
+        &json!({ "OPENAI_API_KEY": "sk-test" }),
+    )
+    .expect("write auth.json");
+    std::fs::write(
+        get_codex_config_path(),
+        "disable_response_storage = true\nnetwork_access = \"restricted\"\nmodel_provider = \"default\"\nmodel = \"gpt-4\"\n\n[model_providers.default]\nbase_url = \"https://api.example/v1\"\n",
+    )
+    .expect("write config.toml");
+
+    let mut config = MultiAppConfig::default();
+    config.ensure_app(&AppType::Codex);
+    config.common_config_snippets.codex =
+        Some("disable_response_storage = true\nnetwork_access = \"restricted\"".to_string());
+    let state = state_from_config(config);
+
+    ProviderService::import_default_config(&state, AppType::Codex)
+        .expect("import default codex config");
+
+    let cfg = state.config.read().expect("read config after import");
+    let provider = cfg
+        .get_manager(&AppType::Codex)
+        .expect("codex manager")
+        .providers
+        .get("default")
+        .expect("default provider exists");
+    let stored_config = provider
+        .settings_config
+        .get("config")
+        .and_then(Value::as_str)
+        .expect("stored codex config should be string");
+
+    assert!(
+        !stored_config.contains("disable_response_storage = true"),
+        "imported Codex snapshot should strip common top-level keys"
+    );
+    assert!(
+        !stored_config.contains("network_access = \"restricted\""),
+        "imported Codex snapshot should reuse the common-config stripping path"
+    );
+    assert!(
+        stored_config.contains("base_url = \"https://api.example/v1\""),
+        "provider-specific Codex config should remain after import"
     );
 }
 
@@ -885,6 +2724,59 @@ fn common_config_snippet_is_merged_into_gemini_env_on_write() {
 
 #[test]
 #[serial]
+fn provider_add_strips_common_snippet_before_gemini_snapshot_persist() {
+    let temp_home = TempDir::new().expect("create temp home");
+    let _env = EnvGuard::set_home(temp_home.path());
+    std::fs::create_dir_all(crate::gemini_config::get_gemini_dir())
+        .expect("create ~/.gemini (initialized)");
+
+    let mut config = MultiAppConfig::default();
+    config.ensure_app(&AppType::Gemini);
+    config.common_config_snippets.gemini =
+        Some(r#"{"env":{"CC_SWITCH_GEMINI_COMMON":"1"}}"#.to_string());
+
+    let state = state_from_config(config);
+
+    let provider = Provider::with_id(
+        "p1".to_string(),
+        "First".to_string(),
+        json!({
+            "env": {
+                "GEMINI_API_KEY": "token",
+                "CC_SWITCH_GEMINI_COMMON": "1"
+            }
+        }),
+        None,
+    );
+
+    ProviderService::add(&state, AppType::Gemini, provider).expect("add should succeed");
+
+    let cfg = state.config.read().expect("read config after add");
+    let provider = cfg
+        .get_manager(&AppType::Gemini)
+        .expect("gemini manager")
+        .providers
+        .get("p1")
+        .expect("p1 exists");
+    let env = provider
+        .settings_config
+        .get("env")
+        .and_then(Value::as_object)
+        .expect("provider env should be object");
+
+    assert!(
+        !env.contains_key("CC_SWITCH_GEMINI_COMMON"),
+        "common Gemini env keys should be stripped before persisting provider snapshot"
+    );
+    assert_eq!(
+        env.get("GEMINI_API_KEY").and_then(Value::as_str),
+        Some("token"),
+        "provider-specific Gemini env keys should remain in the stored snapshot"
+    );
+}
+
+#[test]
+#[serial]
 fn common_config_snippet_is_not_persisted_into_gemini_provider_snapshot_on_switch() {
     let temp_home = TempDir::new().expect("create temp home");
     let _env = EnvGuard::set_home(temp_home.path());
@@ -940,5 +2832,325 @@ fn common_config_snippet_is_not_persisted_into_gemini_provider_snapshot_on_switc
         env.get("GEMINI_API_KEY").and_then(Value::as_str),
         Some("token1"),
         "provider-specific env should remain in snapshot"
+    );
+}
+
+#[test]
+#[serial]
+fn updating_common_snippet_removes_stale_fields_from_other_gemini_provider_snapshots() {
+    let temp_home = TempDir::new().expect("create temp home");
+    let _env = EnvGuard::set_home(temp_home.path());
+    std::fs::create_dir_all(crate::gemini_config::get_gemini_dir())
+        .expect("create ~/.gemini (initialized)");
+
+    let old_snippet = r#"{"env":{"CC_SWITCH_GEMINI_COMMON":"1"}}"#;
+    let new_snippet = r#"{"env":{"CC_SWITCH_GEMINI_REPLACED":"1"}}"#;
+
+    let mut config = MultiAppConfig::default();
+    config.ensure_app(&AppType::Gemini);
+    config.common_config_snippets.gemini = Some(old_snippet.to_string());
+    {
+        let manager = config
+            .get_manager_mut(&AppType::Gemini)
+            .expect("gemini manager");
+        manager.current = "p1".to_string();
+        manager.providers.insert(
+            "p1".to_string(),
+            Provider::with_id(
+                "p1".to_string(),
+                "First".to_string(),
+                json!({
+                    "env": {
+                        "GEMINI_API_KEY": "token1"
+                    }
+                }),
+                None,
+            ),
+        );
+        manager.providers.insert(
+            "p2".to_string(),
+            Provider::with_id(
+                "p2".to_string(),
+                "Second".to_string(),
+                json!({
+                    "env": {
+                        "GEMINI_API_KEY": "token2",
+                        "CC_SWITCH_GEMINI_COMMON": "1"
+                    }
+                }),
+                None,
+            ),
+        );
+    }
+
+    crate::gemini_config::write_gemini_env_atomic(&std::collections::HashMap::from([
+        ("GEMINI_API_KEY".to_string(), "token1".to_string()),
+        ("CC_SWITCH_GEMINI_COMMON".to_string(), "1".to_string()),
+    ]))
+    .expect("seed current gemini env");
+
+    let state = state_from_config(config);
+
+    ProviderService::set_common_config_snippet(
+        &state,
+        AppType::Gemini,
+        Some(new_snippet.to_string()),
+    )
+    .expect("update common snippet");
+
+    let cfg = state.config.read().expect("read config after update");
+    let p2_after = cfg
+        .get_manager(&AppType::Gemini)
+        .expect("gemini manager")
+        .providers
+        .get("p2")
+        .expect("p2 exists");
+    let env = p2_after
+        .settings_config
+        .get("env")
+        .and_then(Value::as_object)
+        .expect("provider env should be object");
+
+    assert!(
+        !env.contains_key("CC_SWITCH_GEMINI_COMMON"),
+        "old common Gemini env keys should be stripped from other provider snapshots"
+    );
+    assert_eq!(
+        env.get("GEMINI_API_KEY").and_then(Value::as_str),
+        Some("token2"),
+        "provider-specific Gemini env keys should remain after migration"
+    );
+    drop(cfg);
+
+    let live_env = crate::gemini_config::read_gemini_env().expect("read gemini env");
+    assert_eq!(
+        live_env
+            .get("CC_SWITCH_GEMINI_REPLACED")
+            .map(String::as_str),
+        Some("1"),
+        "current live Gemini env should reflect the new common snippet"
+    );
+    assert!(
+        !live_env.contains_key("CC_SWITCH_GEMINI_COMMON"),
+        "current live Gemini env should no longer carry the old common snippet"
+    );
+}
+
+#[test]
+#[serial]
+fn setting_gemini_common_snippet_normalizes_existing_provider_snapshot() {
+    let temp_home = TempDir::new().expect("create temp home");
+    let _env = EnvGuard::set_home(temp_home.path());
+    std::fs::create_dir_all(crate::gemini_config::get_gemini_dir())
+        .expect("create ~/.gemini (initialized)");
+
+    let new_snippet = r#"{"env":{"CC_SWITCH_GEMINI_COMMON":"1"}}"#;
+
+    let mut config = MultiAppConfig::default();
+    config.ensure_app(&AppType::Gemini);
+    {
+        let manager = config
+            .get_manager_mut(&AppType::Gemini)
+            .expect("gemini manager");
+        manager.current = "p1".to_string();
+        manager.providers.insert(
+            "p1".to_string(),
+            Provider::with_id(
+                "p1".to_string(),
+                "First".to_string(),
+                json!({
+                    "env": {
+                        "GEMINI_API_KEY": "token1",
+                        "CC_SWITCH_GEMINI_COMMON": "1"
+                    }
+                }),
+                None,
+            ),
+        );
+    }
+
+    let state = state_from_config(config);
+
+    ProviderService::set_common_config_snippet(
+        &state,
+        AppType::Gemini,
+        Some(new_snippet.to_string()),
+    )
+    .expect("set common snippet");
+
+    let cfg = state.config.read().expect("read config after update");
+    let env = cfg
+        .get_manager(&AppType::Gemini)
+        .expect("gemini manager")
+        .providers
+        .get("p1")
+        .expect("p1 exists")
+        .settings_config
+        .get("env")
+        .and_then(Value::as_object)
+        .expect("stored gemini env should be object");
+
+    assert!(
+        !env.contains_key("CC_SWITCH_GEMINI_COMMON"),
+        "new Gemini common fields should be stripped from existing provider snapshots immediately"
+    );
+    assert_eq!(
+        env.get("GEMINI_API_KEY").and_then(Value::as_str),
+        Some("token1"),
+        "provider-specific Gemini env should remain after normalization"
+    );
+}
+
+#[test]
+#[serial]
+fn replacing_gemini_common_snippet_tolerates_invalid_stored_snippet() {
+    let temp_home = TempDir::new().expect("create temp home");
+    let _env = EnvGuard::set_home(temp_home.path());
+    std::fs::create_dir_all(crate::gemini_config::get_gemini_dir())
+        .expect("create ~/.gemini (initialized)");
+
+    let invalid_old_snippet = r#"{"env":{"CC_SWITCH_GEMINI_COMMON":"1"}"#;
+    let new_snippet = r#"{"env":{"CC_SWITCH_GEMINI_REPLACED":"1"}}"#;
+
+    let mut config = MultiAppConfig::default();
+    config.ensure_app(&AppType::Gemini);
+    config.common_config_snippets.gemini = Some(invalid_old_snippet.to_string());
+    {
+        let manager = config
+            .get_manager_mut(&AppType::Gemini)
+            .expect("gemini manager");
+        manager.current = "p1".to_string();
+        manager.providers.insert(
+            "p1".to_string(),
+            Provider::with_id(
+                "p1".to_string(),
+                "First".to_string(),
+                json!({
+                    "env": {
+                        "GEMINI_API_KEY": "token1"
+                    }
+                }),
+                None,
+            ),
+        );
+        manager.providers.insert(
+            "p2".to_string(),
+            Provider::with_id(
+                "p2".to_string(),
+                "Second".to_string(),
+                json!({
+                    "env": {
+                        "GEMINI_API_KEY": "token2",
+                        "CC_SWITCH_GEMINI_COMMON": "1"
+                    }
+                }),
+                None,
+            ),
+        );
+    }
+
+    crate::gemini_config::write_gemini_env_atomic(&std::collections::HashMap::from([
+        ("GEMINI_API_KEY".to_string(), "token1".to_string()),
+        ("CC_SWITCH_GEMINI_COMMON".to_string(), "1".to_string()),
+    ]))
+    .expect("seed current gemini env");
+
+    let state = state_from_config(config);
+
+    ProviderService::set_common_config_snippet(
+        &state,
+        AppType::Gemini,
+        Some(new_snippet.to_string()),
+    )
+    .expect("replace should recover from invalid stored snippet");
+
+    let cfg = state.config.read().expect("read config after replace");
+    assert_eq!(
+        cfg.common_config_snippets.gemini.as_deref(),
+        Some(new_snippet),
+        "invalid stored snippet should not block replacing the saved common snippet"
+    );
+    drop(cfg);
+
+    let live_env = crate::gemini_config::read_gemini_env().expect("read gemini env");
+    assert_eq!(
+        live_env
+            .get("CC_SWITCH_GEMINI_REPLACED")
+            .map(String::as_str),
+        Some("1"),
+        "replacing should write the new common snippet into the live Gemini env"
+    );
+    assert!(
+        !live_env.contains_key("CC_SWITCH_GEMINI_COMMON"),
+        "replacing should rewrite live Gemini env from the provider snapshot even when the old snippet is invalid"
+    );
+}
+
+#[test]
+#[serial]
+fn import_default_config_strips_gemini_common_snippet_before_persisting_snapshot() {
+    let temp_home = TempDir::new().expect("create temp home");
+    let _env = EnvGuard::set_home(temp_home.path());
+    std::fs::create_dir_all(crate::gemini_config::get_gemini_dir())
+        .expect("create ~/.gemini (initialized)");
+
+    crate::gemini_config::write_gemini_env_atomic(&std::collections::HashMap::from([
+        ("GEMINI_API_KEY".to_string(), "token".to_string()),
+        ("CC_SWITCH_GEMINI_COMMON".to_string(), "1".to_string()),
+    ]))
+    .expect("write gemini env");
+    write_json_file(
+        &crate::gemini_config::get_gemini_settings_path(),
+        &json!({
+            "theme": "light",
+            "providerOnly": true
+        }),
+    )
+    .expect("write gemini settings.json");
+
+    let mut config = MultiAppConfig::default();
+    config.ensure_app(&AppType::Gemini);
+    config.common_config_snippets.gemini =
+        Some(r#"{"env":{"CC_SWITCH_GEMINI_COMMON":"1"},"config":{"theme":"light"}}"#.to_string());
+    let state = state_from_config(config);
+
+    ProviderService::import_default_config(&state, AppType::Gemini)
+        .expect("import default gemini config");
+
+    let cfg = state.config.read().expect("read config after import");
+    let provider = cfg
+        .get_manager(&AppType::Gemini)
+        .expect("gemini manager")
+        .providers
+        .get("default")
+        .expect("default provider exists");
+    let env = provider
+        .settings_config
+        .get("env")
+        .and_then(Value::as_object)
+        .expect("stored gemini env should be object");
+    let config_obj = provider
+        .settings_config
+        .get("config")
+        .and_then(Value::as_object)
+        .expect("stored gemini config should be object");
+
+    assert!(
+        !env.contains_key("CC_SWITCH_GEMINI_COMMON"),
+        "imported Gemini snapshot should strip common env keys"
+    );
+    assert_eq!(
+        env.get("GEMINI_API_KEY").and_then(Value::as_str),
+        Some("token"),
+        "provider-specific Gemini env should remain after import"
+    );
+    assert!(
+        !config_obj.contains_key("theme"),
+        "imported Gemini snapshot should strip common config keys"
+    );
+    assert_eq!(
+        config_obj.get("providerOnly").and_then(Value::as_bool),
+        Some(true),
+        "provider-specific Gemini config should remain after import"
     );
 }

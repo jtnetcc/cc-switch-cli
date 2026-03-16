@@ -259,6 +259,64 @@ mod tests {
     }
 
     #[test]
+    fn config_common_set_help_describes_snippet_as_primary_contract() {
+        let mut cmd = Cli::command();
+        let config = cmd
+            .find_subcommand_mut("config")
+            .expect("config subcommand should exist");
+        let common = config
+            .find_subcommand_mut("common")
+            .expect("common subcommand should exist");
+        let set = common
+            .find_subcommand_mut("set")
+            .expect("set subcommand should exist");
+        let help = set.render_long_help().to_string();
+
+        assert!(help.contains("--snippet <SNIPPET>"));
+        assert!(help.contains("Inline snippet text"));
+        assert!(!help.contains("Compatibility flag for inline snippet text"));
+        assert!(help.contains("Compatibility:"));
+        assert!(help.contains("--json <SNIPPET>"));
+        assert!(help.contains("Legacy alias for --snippet <SNIPPET>"));
+        assert!(help.contains("Claude/Gemini"));
+        assert!(help.contains("OpenCode"));
+        assert!(help.contains("Codex"));
+        assert!(!help.contains("Apply to current provider immediately"));
+        assert!(help.contains("live config"));
+        assert!(help.contains("applicable"));
+    }
+
+    #[test]
+    fn parses_config_common_set_legacy_json_alias() {
+        let cli = Cli::parse_from(["cc-switch", "config", "common", "set", "--json", "{}"]);
+
+        match cli.command {
+            Some(Commands::Config(super::commands::config::ConfigCommand::Common(_))) => {}
+            _ => panic!("expected config common set command"),
+        }
+    }
+
+    #[test]
+    fn config_common_clear_help_marks_apply_as_compatibility_flag() {
+        let mut cmd = Cli::command();
+        let config = cmd
+            .find_subcommand_mut("config")
+            .expect("config subcommand should exist");
+        let common = config
+            .find_subcommand_mut("common")
+            .expect("common subcommand should exist");
+        let clear = common
+            .find_subcommand_mut("clear")
+            .expect("clear subcommand should exist");
+        let help = clear.render_long_help().to_string();
+
+        assert!(!help.contains("Apply to current provider immediately"));
+        assert!(help.contains("Compatibility flag"));
+        assert!(help.contains("live config"));
+        assert!(help.contains("applicable"));
+    }
+
+    #[test]
     fn parses_env_tools_subcommand() {
         let cli = Cli::parse_from(["cc-switch", "env", "tools"]);
 

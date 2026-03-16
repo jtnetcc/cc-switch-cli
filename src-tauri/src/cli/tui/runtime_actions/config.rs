@@ -152,11 +152,7 @@ pub(super) fn clear_common_snippet(
     app_type: AppType,
 ) -> Result<(), AppError> {
     let state = load_state()?;
-    {
-        let mut cfg = state.config.write().map_err(AppError::from)?;
-        cfg.common_config_snippets.set(&app_type, None);
-    }
-    state.save()?;
+    ProviderService::clear_common_config_snippet(&state, app_type)?;
 
     ctx.app
         .push_toast(texts::common_config_snippet_cleared(), ToastKind::Success);
@@ -169,6 +165,14 @@ pub(super) fn apply_common_snippet(
     ctx: &mut RuntimeActionContext<'_>,
     app_type: AppType,
 ) -> Result<(), AppError> {
+    if app_type.is_additive_mode() {
+        ctx.app.push_toast(
+            texts::common_config_snippet_apply_not_needed(),
+            ToastKind::Info,
+        );
+        return Ok(());
+    }
+
     let state = load_state()?;
     let current_id = ProviderService::current(&state, app_type.clone())?;
     if current_id.trim().is_empty() {
