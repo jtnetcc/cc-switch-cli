@@ -69,15 +69,6 @@ fn env_supports_truecolor(key: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn env_supports_ansi256(key: &str) -> bool {
-    std::env::var(key)
-        .map(|value| {
-            let normalized = value.to_ascii_lowercase();
-            normalized.contains("256color") || normalized.contains("256-color")
-        })
-        .unwrap_or(false)
-}
-
 fn known_ansi256_terminal() -> bool {
     std::env::var("TERM_PROGRAM")
         .map(|value| value == "Apple_Terminal")
@@ -106,10 +97,6 @@ fn detected_color_mode() -> ColorMode {
 
     if env_supports_truecolor("COLORTERM") || env_supports_truecolor("TERM") {
         return ColorMode::TrueColor;
-    }
-
-    if env_supports_ansi256("TERM") {
-        return ColorMode::Ansi256;
     }
 
     if ssh_plain_xterm_prefers_ansi256() {
@@ -322,7 +309,7 @@ mod tests {
     }
 
     #[test]
-    fn theme_uses_ansi256_when_term_advertises_xterm_256color() {
+    fn theme_keeps_truecolor_when_term_advertises_xterm_256color_without_negative_signals() {
         let _lock = env_lock().lock().expect("env lock poisoned");
         let _no_color = EnvGuard::remove("NO_COLOR");
         let _color_mode = EnvGuard::remove("CC_SWITCH_COLOR_MODE");
@@ -332,14 +319,31 @@ mod tests {
 
         let theme = theme_for(&AppType::Claude);
 
-        assert_eq!(detected_color_mode(), ColorMode::Ansi256);
-        assert_eq!(theme.accent, Color::Indexed(rgb_to_ansi256(139, 233, 253)));
-        assert_eq!(theme.surface, Color::Indexed(rgb_to_ansi256(68, 71, 90)));
+        assert_eq!(detected_color_mode(), ColorMode::TrueColor);
+        assert_eq!(theme.accent, Color::Rgb(139, 233, 253));
+        assert_eq!(theme.surface, Color::Rgb(68, 71, 90));
         assert!(!theme.no_color);
     }
 
     #[test]
-    fn theme_uses_ansi256_when_term_advertises_tmux_256color() {
+    fn theme_keeps_truecolor_for_termius_without_explicit_truecolor_signal() {
+        let _lock = env_lock().lock().expect("env lock poisoned");
+        let _no_color = EnvGuard::remove("NO_COLOR");
+        let _color_mode = EnvGuard::remove("CC_SWITCH_COLOR_MODE");
+        let _colorterm = EnvGuard::remove("COLORTERM");
+        let _term = EnvGuard::set("TERM", "xterm-256color");
+        let _term_program = EnvGuard::set("TERM_PROGRAM", "Termius");
+
+        let theme = theme_for(&AppType::Claude);
+
+        assert_eq!(detected_color_mode(), ColorMode::TrueColor);
+        assert_eq!(theme.accent, Color::Rgb(139, 233, 253));
+        assert_eq!(theme.surface, Color::Rgb(68, 71, 90));
+        assert!(!theme.no_color);
+    }
+
+    #[test]
+    fn theme_keeps_truecolor_when_term_advertises_tmux_256color_without_negative_signals() {
         let _lock = env_lock().lock().expect("env lock poisoned");
         let _no_color = EnvGuard::remove("NO_COLOR");
         let _color_mode = EnvGuard::remove("CC_SWITCH_COLOR_MODE");
@@ -349,9 +353,9 @@ mod tests {
 
         let theme = theme_for(&AppType::Claude);
 
-        assert_eq!(detected_color_mode(), ColorMode::Ansi256);
-        assert_eq!(theme.accent, Color::Indexed(rgb_to_ansi256(139, 233, 253)));
-        assert_eq!(theme.surface, Color::Indexed(rgb_to_ansi256(68, 71, 90)));
+        assert_eq!(detected_color_mode(), ColorMode::TrueColor);
+        assert_eq!(theme.accent, Color::Rgb(139, 233, 253));
+        assert_eq!(theme.surface, Color::Rgb(68, 71, 90));
         assert!(!theme.no_color);
     }
 
